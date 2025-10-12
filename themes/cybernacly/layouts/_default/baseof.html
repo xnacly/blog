@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="{{ site.Language.LanguageCode }}">
   <head>
     {{ partial "head.html" . }}
@@ -8,4 +8,40 @@
     <main>{{ block "main" . }}{{ end }}</main>
     <footer>{{ partial "footer.html" . }}</footer>
   </body>
+  <script>
+    let pumpkinInterval = null;
+
+    function spawnPumpkin() {
+      const pumpkin = document.createElement("span");
+      pumpkin.className = "emoji";
+      pumpkin.textContent = "🎃";
+      pumpkin.style.left = Math.random() * window.innerWidth + "px";
+      pumpkin.style.fontSize = 16 + Math.random() * 32 + "px";
+      pumpkin.style.animationDuration = 2 + Math.random() * 3 + "s";
+      document.body.appendChild(pumpkin);
+    }
+
+    function startPumpkins() {
+      if (!pumpkinInterval) {
+        pumpkinInterval = setInterval(spawnPumpkin, 100);
+      }
+    }
+
+    function stopPumpkins() {
+      clearInterval(pumpkinInterval);
+      pumpkinInterval = null;
+    }
+
+    // Listen for scroll
+    window.addEventListener("scroll", () => {
+      if (window.scrollY === 0) {
+        startPumpkins();
+      } else {
+        stopPumpkins();
+      }
+    });
+
+    // Start immediately if page is already at top
+    if (window.scrollY === 0) startPumpkins();
+  </script>
 </html>

@@ -1,14 +1,14 @@
 :root {
+  --spacing: 1rem;
   --background: #07080d;
   --background-darker: #0c0709;
   --background-lighter: #1a1e30;
   --background-even-lighter: #282e49;
-  --primary: #ff5c53;
-  --primary-darker: #8f3434;
-  --primary-dark: #31181e;
-  --secondary: #29ffff;
-  --secondary-transparent: #29ffff09;
-  --spacing: 1rem;
+  --primary: #e67939;
+  --primary-darker: #be460c;
+  --primary-dark: #3b1401;
+  --secondary: #a3eb1e;
+  --secondary-transparent: #a3eb1e09;
   --text: #cbcbcb;
   --text-secondary: #919191;
   --warning: #e0de71;
@@ -28,7 +28,8 @@
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
-  src: local(""),
+  src:
+    local(""),
     url("/fonts/jetbrains-mono-v13-latin-regular.woff2") format("woff2"),
     /* Chrome 26+, Opera 23+, Firefox 39+ */
       url("/fonts/jetbrains-mono-v13-latin-regular.woff") format("woff");
@@ -40,7 +41,8 @@
   font-family: "JetBrains Mono";
   font-style: italic;
   font-weight: 400;
-  src: local(""),
+  src:
+    local(""),
     url("/fonts/jetbrains-mono-v13-latin-italic.woff2") format("woff2"),
     /* Chrome 26+, Opera 23+, Firefox 39+ */
       url("/fonts/jetbrains-mono-v13-latin-italic.woff") format("woff");
@@ -59,12 +61,12 @@ code {
 body {
   color: var(--text);
   font-family: "JetBrains Mono", monospace;
-  background-image: radial-gradient(
-      var(--secondary-transparent) 20%,
-      transparent 20%
-    ),
+  background-image:
+    radial-gradient(var(--secondary-transparent) 20%, transparent 20%),
     radial-gradient(var(--secondary-transparent) 20%, transparent 20%);
-  background-position: 0 0, 50px 50px;
+  background-position:
+    0 0,
+    50px 50px;
   background-size: 10px 14px;
   background-color: var(--background);
   font-size: 11pt;
@@ -289,9 +291,9 @@ nav:not(#TableOfContents) {
     }
 
     pre {
-        margin: 0;
-        padding-top: calc(var(--spacing) / 4);
-        padding-bottom: calc(var(--spacing) / 4);
+      margin: 0;
+      padding-top: calc(var(--spacing) / 4);
+      padding-bottom: calc(var(--spacing) / 4);
     }
 
     .highlight {
@@ -457,5 +459,32 @@ code {
 @media only screen and (max-width: 1600px) {
   .centered {
     max-width: 90vw;
+  }
+}
+
+.emoji {
+  position: fixed;
+  top: -50px;
+  pointer-events: none;
+  user-select: none;
+  font-size: 2rem;
+  z-index: 9999;
+
+  animation-name: fallFade;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@keyframes fallFade {
+  0% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh) rotate(360deg);
+    opacity: 0;
   }
 }
