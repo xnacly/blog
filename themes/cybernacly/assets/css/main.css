@@ -21,6 +21,10 @@
 
 * {
   box-sizing: border-box;
+  cursor:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'  width='40' height='48' viewport='0 0 100 100' style='fill:black;font-size:24px;'><text y='50%'>🔪</text></svg>")
+      16 0,
+    auto;
 }
 
 /* jetbrains-mono-regular - latin */
@@ -487,4 +491,18 @@ code {
     transform: translateY(100vh) rotate(360deg);
     opacity: 0;
   }
+}
+
+.particle {
+  position: fixed;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: orange;
+  pointer-events: none;
+  user-select: none;
+  z-index: 999999;
+  opacity: 1;
+  transform: translate(0, 0);
+  transition: transform 0.5s ease-out, opacity 0.5s ease-out;
 }
