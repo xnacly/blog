@@ -86,6 +86,8 @@ segmented lists beat dynamic arrays by 2-4x.
 
 ## Design
 
+<!-- TODO: -->
+
 ## Indexing
 
 Since a segmented list is based on a group of segments containing its elements,
@@ -104,7 +106,7 @@ o(i) &= i - S(b(i))
 \end{align}
 $$
 
-Therefore, for our segmented list, given \(s_o := 8\), \(\lambda := 2\) (I use
+Therefore, for our segmented list, given \(s_0 := 8\), \(\lambda := 2\) (I use
 2, since geometric growth means less syscalls for fast growing lists, the
 equations hold for \(\lambda > 1\)) and an index \(i := 18\), we can
 calculate:
@@ -890,7 +892,14 @@ use segmented_rs::alloc;
 static A: alloc::SegmentedAlloc = alloc::SegmentedAlloc::new();
 ```
 
+Or we inject the allocator into our list to only make it use the allocator.
+
 ## Segmented List
+
+As introduced in [Segmented Lists vs Dynamic
+Arrays](#segmented-lists-vs-dynamic-arrays), a segmented list consists of
+segments. Each segment is lazily allocated and doubles in size to the previous
+one. The first segment is of size `8`, the next `16`, the next `32`, and so on.
 
 ## Optimisations
 
