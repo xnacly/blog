@@ -6,6 +6,7 @@ tags:
   - rust
   - c
 draft: true
+math: true
 ---
 
 I needed to replace my _growing list_ of three different dynamic array
@@ -33,7 +34,7 @@ performance and how pretty they look.
 > backed by mmap, my handrolled generic segmented list and everything around
 > that"_**.
 
-## Why Segmented Lists
+## Segmented Lists vs Dynamic arrays
 
 Vectors suck at growing a lot, because:
 
@@ -41,16 +42,65 @@ Vectors suck at growing a lot, because:
 2. They have to copy their contents to the new space
 3. They require to "update" all references into the previous space to the new
    space
-4. For large `mem::size_of::<T>()`, copies are costly and require moving a lot
-   of memory
+4. For large `mem::size_of::<T>()` / `sizeof(T)`, copies are costly and move a
+   lot of memory
+
+Segmented lists suck because:
+
+1. The underlying storage is non-contiguous
+2. Indexing requires addition, subtraction and bitshifts for finding the
+   segment and its offset
+
+The tradeoff is yours to make. In C benchmarks for large and many AST nodes,
+segmented lists beat dynamic arrays by 2-4x.
 
 ### Design
 
 ### Indexing
 
+Since a segmented list is based on a group of segments containing its elements,
+indexing isn't as easy as incrementing a pointer by `sizeof(T)`. Instead we
+have to compute the segment and the offset for any given index into the list
+(\(i\)). Since a list starts with a default size (\(s_0\)) and grows at a
+geometric rate (\(\lambda\)). We can compute the segment start with \(S(i)\),
+the segment / block index with \(b(i)\) and the offset into said segment with
+\(o(i)\):
+
+$$
+\begin{align}
+S(b) &= s_0 \cdot (\lambda^{b} - 1) \\
+b(i) &= \left\lfloor \log_{\lambda} \left( \frac{i}{s_0} + 1 \right) \right\rfloor \\
+o(i) &= i - S(b(i))
+\end{align}
+$$
+
+Therefore, for our segmented list, given \(s_o := 8\), \(\lambda := 2\) and an
+index \(i := 18\), we can calculate:
+
+$$
+\begin{align}
+b(i) &= \left\lfloor \log_{\lambda} \left( \frac{i}{s_0} + 1 \right) \right\rfloor \\
+b(18)&= \left\lfloor \log_{2} \left( \frac{18}{8} + 1 \right) \right\rfloor \\
+     &= \left\lfloor \log_{2} \left( 3.25 \right) \right\rfloor \\
+     &= \left\lfloor 1.7004 \right\rfloor \\
+     &= \underline{1} \\
+S(b) &= s_0 \cdot (\lambda^{b} - 1) \\
+S(1) &= 8 \cdot (2^{1} - 1) \\
+     &= \underline{8} \\
+o(i) &= i - S(b(i)) \\
+o(18)&= 18 - 8 \\
+     &= \underline{10} \\
+\end{align}
+$$
+
+Thus, attempting to index at the position \(18\) requires us to access the
+segment at position \(1\) with its inner offset of \(10\).
+
 ## C Implementation
 
-This is my starting point I whipped up in an afternoon.
+This is my starting point I whipped up in an afternoon. Please keep in mind:
+this is my first allocator in any sense, I'm still fiddeling around and thusfar
+asan, valgrind, gcc, clang and my unittests tell me this is fine.
 
 ### Bump allocator
 
@@ -111,10 +161,12 @@ typedef struct {
 Allocator *bump_init(uint64_t min_size, uint64_t max_size);
 ```
 
-The segmented bump allocator itself is of course pretty simple, allocate a
-block, allocate by incrementing the pointer, if out of space in the current
-block, allocate the next one. Deallocation is done by unmapping each allocated
-block.
+The segmented bump allocator itself is of course pretty simple, allocate page
+aligned block, hand out memory by incrementing the pointer, if out of space in
+the current block, allocate the next one, as shown for the first three blocks
+below:
+
+![first three block sizes](/segmented-list/block-sizes.png)
 
 ```c
 #define _GNU_SOURCE
@@ -191,24 +243,6 @@ void *bump_request(void *ctx, size_t size) {
   return ptr;
 }
 
-void bump_destroy(void *ctx) {
-  ASSERT(ctx != NULL, "bump_destroy on already destroyed allocator");
-  BumpCtx *b_ctx = (BumpCtx *)ctx;
-  for (size_t i = 0; i <= b_ctx->pos; i++) {
-    if (b_ctx->blocks[i]) {
-      munmap(b_ctx->blocks[i], b_ctx->block_sizes[i]);
-      b_ctx->blocks[i] = NULL;
-    }
-  }
-  free(ctx);
-}
-
-Stats bump_stats(void *ctx) {
-  BumpCtx *b_ctx = (BumpCtx *)ctx;
-  return (Stats){.allocated = b_ctx->total_allocated,
-                 .current = b_ctx->total_used};
-}
-
 Allocator *bump_init(uint64_t min_size, uint64_t max_size) {
   BumpCtx *ctx = malloc(sizeof(BumpCtx));
   ASSERT(ctx != NULL, "failed to bump allocator context");
@@ -233,52 +267,41 @@ Allocator *bump_init(uint64_t min_size, uint64_t max_size) {
 }
 ```
 
-With the interface and this implementation all functions in the purple garden
-code base that allocate take `Allocator *a` and requests memory via `CALL(a,
-request, 1024)`. For instance in the virtual machine when creating a new
-segmented list:
+Deallocation is done by unmapping each allocated block.
 
 ```c
-    case OP_NEW: {
-      Value v = (Value){0};
-      switch ((VM_New)arg) {
-      case VM_NEW_ARRAY:
-        v.type = V_ARRAY;
-        if (vm->size_hint != 0) {
-          LIST_Value *lv = CALL(vm->alloc, request, sizeof(LIST_Value));
-          *lv = LIST_new(Value);
-          v.array = lv;
-        } else {
-          LIST_Value *lv = CALL(vm->alloc, request, sizeof(LIST_Value));
-          *lv = (LIST_Value){
-              .len = 0,
-          };
-          v.array = lv;
-        }
-        break;
-      default:
-        ASSERT(0, "OP_NEW unimplemented");
-        break;
-      }
-      vm->registers[0] = v;
-      vm->size_hint = 0;
-      break;
+void bump_destroy(void *ctx) {
+  ASSERT(ctx != NULL, "bump_destroy on already destroyed allocator");
+  BumpCtx *b_ctx = (BumpCtx *)ctx;
+  for (size_t i = 0; i <= b_ctx->pos; i++) {
+    if (b_ctx->blocks[i]) {
+      munmap(b_ctx->blocks[i], b_ctx->block_sizes[i]);
+      b_ctx->blocks[i] = NULL;
     }
+  }
+  free(ctx);
+}
+```
+
+With the interface and this implementation all functions in the purple garden
+code base that allocate take `Allocator *a` (or `Allocator *alloc`) and
+requests memory with `CALL(a, request, 1024)`. For instance in the virtual
+machine when creating a new space for the globals:
+
+```c
+vm.globals = CALL(alloc, request, (sizeof(Value) * GLOBAL_SIZE));
 ```
 
 ### List macros and C "Generics"
 
-```c
-// adts defines abstract datatypes for internal (runtime) and userspace (std
-// packages, maps, arrays) usage
-#pragma once
+My first step was to make use of the macro system to create a "generic" container:
 
+```text
 #include "mem.h"
 #include "strings.h"
 #include <string.h>
 
 #define LIST_DEFAULT_SIZE 8
-// 24 blocks means around 134mio elements, thats enough I think
 #define LIST_BLOCK_COUNT 24
 
 #define LIST_TYPE(TYPE)                                                        \
@@ -294,7 +317,34 @@ segmented list:
     l.type_size = sizeof(TYPE);                                                \
     l;                                                                         \
   })
+```
 
+These macros are then used to define and create a list via:
+
+```c
+LIST_TYPE(char) cl = LIST_new(char);
+```
+
+Now there is the need for interacting with the list, for this we need append,
+get and insert (plus their non bounds checking equivalents), allowing for:
+
+```c
+Allocator *a = bump_init(1024);
+LIST_TYPE(char) cl = LIST_new(char);
+LIST_append(&cl, a, 'H')
+LIST_append(&cl, a, 'E')
+LIST_append(&cl, a, 'L')
+assert(LIST_get(&cl, 0) == 'H')
+assert(LIST_get(&cl, 1) == 'E')
+assert(LIST_get(&cl, 2) == 'L')
+assert(LIST_insert_UNSAFE(&cl, 1, 'O'))
+assert(LIST_get_UNSAFE(&cl, 1) == 'O')
+```
+
+All of these macros require the index into the block and the block itself.
+`ListIdx` and `idx_to_block_idx` do exactly that:
+
+```c
 struct ListIdx {
   // which block to use for the indexing
   uint64_t block;
@@ -303,7 +353,71 @@ struct ListIdx {
 };
 
 struct ListIdx idx_to_block_idx(size_t idx);
+```
 
+The implementation of `idx_to_block_idx` works in constant time and is
+therefore a bit worse to read than one working in linear time due to the
+exploitation of the geometric series, it does however follow
+[Indexing](#indexing), just with a few changes to omit heavy computations
+(\(\log_2\), etc.).
+
+```c
+struct ListIdx idx_to_block_idx(size_t idx) {
+  struct ListIdx r = {0};
+  if (idx < LIST_DEFAULT_SIZE) {
+    r.block_idx = idx;
+    return r;
+  }
+
+  // This optimizes the block index lookup to be constant time
+  //
+  //     block 0 size = LIST_DEFAULT_SIZE
+  //     block 1 size = LIST_DEFAULT_SIZE*2
+  //     block 2 size = LIST_DEFAULT_SIZE*4
+  //     block 3 size = LIST_DEFAULT_SIZE*8
+  //
+  // The starting index of each block is a geometric series:
+  //
+  //    s(i) = LIST_DEFAULT_SIZE * (2^i - 1)
+  //
+  // We solve for i, so the following stands:
+  //
+  //    s(i) <= idx < s(i+1)
+  //
+  //    2^i - 1 <= idx / LIST_DEFAULT_SIZE < 2^(i+1) - 1
+  //    idx / LIST_DEFAULT_SIZE + 1 >= 2^i
+  //
+  // Thus: adding LIST_DEFAULT_SIZE to idx shifts the series so the msb of idx +
+  // LIST_DEFAULT_SIZE correspond to the block number
+  //
+  // Visually:
+  //
+  //     Global index:  0 1 2 3 4 5 6 7  |  8  9 10 ... 23  | 24 25 ... 55  | 56
+  //     ... Block:     0                |  1               |  2            | 3
+  //     Block size:    8                | 16               | 32            | 64
+  //     ... idx + LIST_DEFAULT_SIZE: 0+8=8  -> MSB pos 3 -> block 0 7+8=15 ->
+  //     MSB pos 3 -> block 0 8+8=16 -> MSB pos 4 -> block 1 23+8=31-> MSB pos 4
+  //     -> block 1 24+8=32-> MSB pos 5 -> block 2
+
+  // shifting the geometric series so 2^i aligns with idx
+  uint64_t adjusted = idx + LIST_DEFAULT_SIZE;
+  uint64_t msb_pos = 63 - __builtin_clzll(adjusted);
+
+  //   log2(LIST_DEFAULT_SIZE) = 3 for LIST_DEFAULT_SIZE = 8
+#define LOG2_OF_LIST_DEFAULT_SIZE 3
+  // first block is LIST_DEFAULT_SIZE wide, this normalizes
+  r.block = msb_pos - LOG2_OF_LIST_DEFAULT_SIZE;
+
+  uint64_t start_index_of_block = LIST_DEFAULT_SIZE * ((1UL << r.block) - 1);
+  r.block_idx = idx - start_index_of_block;
+  return r;
+}
+```
+
+`LIST_append` allocates on demand, based on the segment computed by
+`idx_to_block_idx`:
+
+```text
 #define LIST_append(LIST, ALLOC, ELEM)                                         \
   {                                                                            \
     /* allocate block array if not yet allocated */                            \
@@ -328,7 +442,13 @@ struct ListIdx idx_to_block_idx(size_t idx);
     (LIST)->blocks[bi.block][bi.block_idx] = (ELEM);                           \
     (LIST)->len++;                                                             \
   }
+```
 
+The non allocating interactions like `_get`, `_get_UNSAFE` and `_insert_UNSAFE`
+do a bounds check if applicable and afterwards use the segment and the offset
+computed by `idx_to_block_idx`:
+
+```text
 #define LIST_get(LIST, IDX)                                                    \
   ({                                                                           \
     ASSERT(IDX < (LIST)->len, "List_get out of bounds");                       \
@@ -349,18 +469,15 @@ struct ListIdx idx_to_block_idx(size_t idx);
   }
 ```
 
-### Usage
-
 ## Rust Implementation
 
-
 > _"If you wish to make an apple pie from scratch, you must first invent the universe."_
-> 
+>
 > -Carl Sagan
 
 In this fashion we will:
 
-1. Implement mmap and munmap in assembly using the x86 Linux syscall ABI 
+1. Implement mmap and munmap in assembly using the x86 Linux syscall ABI
 2. Implement a `std::alloc::GlobalAlloc` compatible allocator based on that
 3. Implement the segmented list using the allocator
 4. Profit.
@@ -474,9 +591,9 @@ The only thing tripping me up were the possible values for `options` and
 some
 [docs](https://doc.rust-lang.org/reference/inline-assembly.html#r-asm.options):
 
-| Option            | Dacription                                                  |
-| ----------------- | ------------------------------------------------------------ |
-| `nostack`         | asm does not modify the stack via push, pop or red-zone      |
+| Option    | Dacription                                              |
+| --------- | ------------------------------------------------------- |
+| `nostack` | asm does not modify the stack via push, pop or red-zone |
 
 [`lateout`](https://doc.rust-lang.org/reference/inline-assembly.html#r-asm.operand-type.supported-operands.lateout)
 writes the register contents to its argument and doesn't care about overwriting
@@ -561,8 +678,167 @@ pub fn munmap(ptr: std::ptr::NonNull<u8>, size: usize) {
 
 ### Bump allocator
 
-The bump allocator now uses these wrappers to allocate and deallocate memory
-chunks.
+The bump allocator now uses these safe syscall wrappers to allocate and
+deallocate memory chunks, it also implements `std::alloc::GlobalAlloc` and
+therefore also has to implement `Send` and `Sync`.
+
+The main component of the allocator is its metadata - `SegmentedAllocCtx`:
+
+```rust
+const MIN_SIZE: usize = 4096;
+const MAX_BLOCKS: usize = 55;
+const GROWTH: usize = 2;
+
+#[derive(Debug)]
+struct SegmentedAllocCtx {
+    /// idx into self.blocks
+    cur_block: usize,
+    /// size of the current block
+    size: usize,
+    /// bytes in use of the current block
+    pos: usize,
+    blocks: [Option<NonNull<u8>>; MAX_BLOCKS],
+    block_sizes: [usize; MAX_BLOCKS],
+}
+
+impl SegmentedAllocCtx {
+    const fn new() -> Self {
+        SegmentedAllocCtx {
+            size: MIN_SIZE,
+            cur_block: 0,
+            pos: 0,
+            blocks: [const { None }; MAX_BLOCKS],
+            block_sizes: [0; MAX_BLOCKS],
+        }
+    }
+}
+```
+
+Since I don't care about thread safety and this is just a comparison between my
+already thread unsafe C code, this context is wrapped in an `UnsafeCell`:
+
+```rust
+/// Implements a variable size bump allocator, employing mmap to allocate a starting block of
+/// 4096B, once a block is exceeded by a request, the allocator mmaps a new block double the size
+/// of the previously allocated block
+pub struct SegmentedAlloc {
+    ctx: UnsafeCell<SegmentedAllocCtx>,
+}
+```
+
+To cement this unsafeness, `Sync` and `Send` are implemented as nops, this also
+requires never using `SegmentedAlloc` in multithreaded contexts.
+
+```rust
+unsafe impl Send for SegmentedAlloc {}
+unsafe impl Sync for SegmentedAlloc {}
+```
+
+I ported the bump allocator line by line to rust:
+
+```rust
+#[inline(always)]
+fn align_up(val: usize, align: usize) -> usize {
+    debug_assert!(align.is_power_of_two());
+    (val + align - 1) & !(align - 1)
+}
+
+impl SegmentedAlloc {
+    pub const fn new() -> Self {
+        Self {
+            ctx: UnsafeCell::new(SegmentedAllocCtx::new()),
+        }
+    }
+
+    pub fn request(&self, layout: std::alloc::Layout) -> NonNull<u8> {
+        assert!(layout.size() > 0, "Zero-size allocation is not allowed");
+        assert!(
+            layout.align().is_power_of_two(),
+            "Alignment must be power-of-two per GlobalAlloc contract"
+        );
+
+        let ctx = unsafe { &mut *self.ctx.get() };
+
+        if ctx.blocks[0].is_none() {
+            ctx.size = MIN_SIZE;
+            ctx.cur_block = 0;
+            ctx.pos = 0;
+            ctx.block_sizes[0] = MIN_SIZE;
+            ctx.blocks[0] = Some(mmap(
+                None,
+                MIN_SIZE,
+                mmap::MmapProt::READ | mmap::MmapProt::WRITE,
+                mmap::MmapFlags::PRIVATE | mmap::MmapFlags::ANONYMOUS,
+                -1,
+                0,
+            ));
+        }
+
+        loop {
+            let block_capacity = ctx.block_sizes[ctx.cur_block];
+            debug_assert!(
+                block_capacity >= ctx.size,
+                "block_capacity should be >= ctx.size"
+            );
+
+            let offset = align_up(ctx.pos, layout.align());
+            let end_offset = offset
+                .checked_add(layout.size())
+                .expect("Allocation size overflow");
+
+            if end_offset >= block_capacity {
+                assert!(ctx.cur_block + 1 < MAX_BLOCKS, "Exceeded MAX_BLOCKS");
+                let new_size = ctx.size * GROWTH;
+                ctx.cur_block += 1;
+                ctx.block_sizes[ctx.cur_block] = new_size;
+                ctx.size = new_size;
+                ctx.pos = 0;
+                ctx.blocks[ctx.cur_block] = Some(mmap(
+                    None,
+                    new_size,
+                    mmap::MmapProt::READ | mmap::MmapProt::WRITE,
+                    mmap::MmapFlags::PRIVATE | mmap::MmapFlags::ANONYMOUS,
+                    -1,
+                    0,
+                ));
+                continue;
+            }
+
+            let block_ptr = ctx.blocks[ctx.cur_block].unwrap();
+
+            let ptr_addr = unsafe { block_ptr.as_ptr().add(offset) };
+            debug_assert!(
+                (ptr_addr as usize) % layout.align() == 0,
+                "Returned pointer is not aligned to {}",
+                layout.align()
+            );
+
+            ctx.pos = end_offset;
+
+            return NonNull::new(ptr_addr)
+                .expect("Failed to create NonNull from allocation pointer");
+        }
+    }
+
+    pub fn free(&mut self) {
+        let ctx = unsafe { &mut *self.ctx.get() };
+        for i in 0..MAX_BLOCKS {
+            let size = ctx.block_sizes[i];
+            if size == 0 {
+                break;
+            }
+
+            let Some(block) = ctx.blocks[i] else {
+                break;
+            };
+            munmap(block, size);
+        }
+    }
+}
+```
+
+### Rudimentary Bump Allocator Tests
+
 
 ### Segmented List
 
@@ -580,3 +856,11 @@ chunks.
 ### Rust Benchmark setup
 
 ## Pain points
+
+- Sync and Send have to be implemented for `std::alloc::GlobalAlloc`
+- Tests are concurrent and therefore crash if not run with `--test-threads=1`
+- Segfaults in Rust are worse to debug with `gdb` than in C
+- No stack traces for `panic!` when implementing `std::alloc::GlobalAlloc`, just:
+  ```text
+  panic:
+  ```
