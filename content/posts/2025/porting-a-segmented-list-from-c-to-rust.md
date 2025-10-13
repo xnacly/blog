@@ -9,6 +9,36 @@ draft: true
 math: true
 ---
 
+{{<callout type="TLDR: Info">}}
+Porting a segmented list from C to Rust and sharing the process. Both written
+from scratch and without any dependencies:
+
+```c
+Allocator *a = bump_init(1024, 0);
+LIST_TYPE(size_t);
+LIST_size_t list = LIST_new(size_t);
+size_t count = 64 * 1000 * 1000;
+for (size_t i = 0; i < count; i++) {
+    LIST_append(&list, a, i);
+}
+ASSERT(list.len == count, "list not of correct length");
+CALL(a, destroy);
+free(a);
+```
+
+to
+
+```rust
+let mut list = SegmentedList::new();
+let count = 64 * 1000 * 1000;
+for i in 0..count {
+    list.push(i);
+}
+assert_eq!(list.len(), count);
+```
+
+{{</callout>}}
+
 I needed to replace my _growing list_ of three different dynamic array
 implementations in my bytecode interpreter: one for Nodes, one for runtime
 Values and one for bytecode. Building the AST and bytecode required a lot of
@@ -34,7 +64,7 @@ performance and how pretty they look.
 > backed by mmap, my handrolled generic segmented list and everything around
 > that"_**.
 
-## Segmented Lists vs Dynamic arrays
+# Segmented Lists vs Dynamic Arrays
 
 Vectors suck at growing a lot, because:
 
@@ -54,9 +84,9 @@ Segmented lists suck because:
 The tradeoff is yours to make. In C benchmarks for large and many AST nodes,
 segmented lists beat dynamic arrays by 2-4x.
 
-### Design
+## Design
 
-### Indexing
+## Indexing
 
 Since a segmented list is based on a group of segments containing its elements,
 indexing isn't as easy as incrementing a pointer by `sizeof(T)`. Instead we
@@ -74,8 +104,10 @@ o(i) &= i - S(b(i))
 \end{align}
 $$
 
-Therefore, for our segmented list, given \(s_o := 8\), \(\lambda := 2\) and an
-index \(i := 18\), we can calculate:
+Therefore, for our segmented list, given \(s_o := 8\), \(\lambda := 2\) (I use
+2, since geometric growth means less syscalls for fast growing lists, the
+equations hold for \(\lambda > 1\)) and an index \(i := 18\), we can
+calculate:
 
 $$
 \begin{align}
@@ -96,13 +128,13 @@ $$
 Thus, attempting to index at the position \(18\) requires us to access the
 segment at position \(1\) with its inner offset of \(10\).
 
-## C Implementation
+# C Implementation
 
 This is my starting point I whipped up in an afternoon. Please keep in mind:
 this is my first allocator in any sense, I'm still fiddeling around and thusfar
 asan, valgrind, gcc, clang and my unittests tell me this is fine.
 
-### Bump allocator
+## Bump allocator
 
 In purple garden all allocators are based on the `Allocator` "interface" to
 allow for dynamically replacing the bump allocator with different other
@@ -292,7 +324,7 @@ machine when creating a new space for the globals:
 vm.globals = CALL(alloc, request, (sizeof(Value) * GLOBAL_SIZE));
 ```
 
-### List macros and C "Generics"
+## List macros and C "Generics"
 
 My first step was to make use of the macro system to create a "generic" container:
 
@@ -329,8 +361,9 @@ Now there is the need for interacting with the list, for this we need append,
 get and insert (plus their non bounds checking equivalents), allowing for:
 
 ```c
-Allocator *a = bump_init(1024);
-LIST_TYPE(char) cl = LIST_new(char);
+Allocator *a = bump_init(1024, 0);
+LIST_TYPE(char);
+LIST_char cl = LIST_new(char);
 LIST_append(&cl, a, 'H')
 LIST_append(&cl, a, 'E')
 LIST_append(&cl, a, 'L')
@@ -469,7 +502,7 @@ computed by `idx_to_block_idx`:
   }
 ```
 
-## Rust Implementation
+# Rust Implementation
 
 > _"If you wish to make an apple pie from scratch, you must first invent the universe."_
 >
@@ -482,7 +515,7 @@ In this fashion we will:
 3. Implement the segmented list using the allocator
 4. Profit.
 
-### Handrolling x86 mmap & munmap syscalls
+## Handrolling x86 mmap & munmap syscalls
 
 About using the `libc` crate: This would be against my mentality of not using
 dependencies if possible and libc is a large one due to it pulling in the C
@@ -676,11 +709,12 @@ pub fn munmap(ptr: std::ptr::NonNull<u8>, size: usize) {
 }
 ```
 
-### Bump allocator
+## Bump allocator
 
 The bump allocator now uses these safe syscall wrappers to allocate and
 deallocate memory chunks, it also implements `std::alloc::GlobalAlloc` and
-therefore also has to implement `Send` and `Sync`.
+needs to implement `Send` and `Sync` since its used via `#[global_allocator]`,
+which is static and requires the corresponding traits.
 
 The main component of the allocator is its metadata - `SegmentedAllocCtx`:
 
@@ -734,12 +768,14 @@ unsafe impl Send for SegmentedAlloc {}
 unsafe impl Sync for SegmentedAlloc {}
 ```
 
-I ported the bump allocator line by line to rust:
+I ported the bump allocator line by line to rust. It uses the `mmap` and
+`munmap` wrappers, keeps track of its state via `SegmentedAllocCtx` and hands
+out data via `SegmentedAlloc::request`. `SegmentedAlloc::free` is the basis for
+implementing `Drop` for `SegmentedList` which will come in the next section.
 
 ```rust
 #[inline(always)]
 fn align_up(val: usize, align: usize) -> usize {
-    debug_assert!(align.is_power_of_two());
     (val + align - 1) & !(align - 1)
 }
 
@@ -752,10 +788,6 @@ impl SegmentedAlloc {
 
     pub fn request(&self, layout: std::alloc::Layout) -> NonNull<u8> {
         assert!(layout.size() > 0, "Zero-size allocation is not allowed");
-        assert!(
-            layout.align().is_power_of_two(),
-            "Alignment must be power-of-two per GlobalAlloc contract"
-        );
 
         let ctx = unsafe { &mut *self.ctx.get() };
 
@@ -837,12 +869,30 @@ impl SegmentedAlloc {
 }
 ```
 
-### Rudimentary Bump Allocator Tests
+`std::alloc::GlobalAlloc` is just an abstraction to calling
+`SegmentedAlloc::request` on alloc and nop on dealloc:
 
+```rust
+unsafe impl GlobalAlloc for SegmentedAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        self.request(layout).as_ptr()
+    }
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: std::alloc::Layout) {}
+}
+```
 
-### Segmented List
+We can now use the following to make our complete program use the allocator:
 
-### Optimisations
+```rust
+use segmented_rs::alloc;
+
+#[global_allocator]
+static A: alloc::SegmentedAlloc = alloc::SegmentedAlloc::new();
+```
+
+## Segmented List
+
+## Optimisations
 
 <!-- TODO: provide context for these -->
 
@@ -851,16 +901,68 @@ impl SegmentedAlloc {
 - precompute block boundaries in `BLOCK_STARTS` (-41%)
 - remove unnecessary indirections (-8%)
 
-## Runtime and Memory Comparison of C, Rust and std::vec::Vec
+## segmented_rs::list::SegmentedList vs std::vec::Vec
 
-### Rust Benchmark setup
+# Rust Pain Points
 
-## Pain points
+- Sync and Send have to be implemented for `std::alloc::GlobalAlloc`, I get the
+  allocator has to be shared between threads, but its weird to have a nop impl
+- `cargo test` executes tests concurrently and therefore crash if not run with
+  `--test-threads=1`, which was fucking hard to debug, since these are flaky as
+  hell, sometimes it happens, sometimes it doesnt:
 
-- Sync and Send have to be implemented for `std::alloc::GlobalAlloc`
-- Tests are concurrent and therefore crash if not run with `--test-threads=1`
-- Segfaults in Rust are worse to debug with `gdb` than in C
+  - illegal memory access:
+
+    ```text
+    running 24 tests
+    error: test failed, to rerun pass `--lib`
+
+    Caused by:
+      process didn't exit successfully: 
+      `/home/teo/programming/segmented-rs/target/debug/deps/segmented_rs-68ce766f62589be2` 
+      (signal: 11, SIGSEGV: invalid memory reference)
+    ```
+
+  - `SendError` since `SegmentedAlloc` couldn't be send from a thread to another
+
+    ```text
+    thread 'main' panicked at library/test/src/lib.rs:463:73:
+    called `Option::unwrap()` on a `None` value
+    [Thread 0x7ffff691f6c0 (LWP 22634) exited]
+
+    thread 'list::tests::stress_test_large_fill' panicked at library/test/src/lib.rs:686:30:
+    called `Result::unwrap()` on an `Err` value: SendError { .. }
+    ```
+
+- Segfaults in Rust are worse to debug with `gdb` than in C, unaligned memory
+  issues, segfaults and other invalid memory access are hard to pinpoint
 - No stack traces for `panic!` when implementing `std::alloc::GlobalAlloc`, just:
+
   ```text
   panic:
   ```
+
+  Gdb (most of the time) helps with the stacktrace when compiling with
+  `RUSTFLAGS="-C debuginfo=2"`.
+
+# What Rust does better than C (at least in this case)
+
+- Generics, looking at you `_Generic`, Rust just did it better. To be fair,
+  even Java did it better
+- Drop implementations and traits in general are so much better than any C
+  alternative, even though I can think of at least 3 shittier ways to emulate
+  traits in C
+- Enums are so much fun in Rust, I love variant "bodies"? The only thing
+  tripping me up was that one can't use them to mirror the C flag behaviour for
+  bitOring arguments.
+- Builtin testing and benchmarking (the latter at least somewhat). I really
+  miss Gos testing behaviour in Rust, but the default "workflow" is fine for my
+  needs (table driven tests for the win)
+- Compile time constructs, precomputing the starts of blocks allowed me to
+  simplify my segment and offset lookup code by a whole lot, and its faster
+
+Of course this comparison isn't that fair, since C is from the 70s and Rust has
+learned from the shortcomings of the systems level programming languages coming
+before it. I still like to program in C, particulary for the challenge and the
+level of control it allows, but only with `-fsanitize=address,undefined` and
+running valgrind a whole lot.
