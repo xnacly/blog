@@ -75,10 +75,10 @@ Vectors suck at growing a lot, because:
 4. For large `mem::size_of::<T>()` / `sizeof(T)`, copies are costly and move a
    lot of memory
 
-Segmented lists suck because:
+On the other hand, segmented lists suck due to:
 
-1. The underlying storage is non-contiguous
-2. Indexing requires addition, subtraction and bitshifts for finding the
+1. The underlying storage being non-contiguous
+2. Indexing requiring addition, subtraction and bitshifts for finding the
    segment and its offset
 
 The tradeoff is yours to make. In C benchmarks for large and many AST nodes,
@@ -86,7 +86,17 @@ segmented lists beat dynamic arrays by 2-4x.
 
 ## Design
 
+
 <!-- TODO: -->
+
+- **Segmented storage**: The list grows in *blocks*, each larger than the previous, instead of reallocating a single contiguous array.  
+- **Geometric growth**: Block sizes increase geometrically (\(s_0; λ \cdot s_0; λ^2 \cdot s_0; \textrm{...}\)) to reduce syscalls / allocations.  
+- **Lazy allocation**: Blocks are only allocated when elements are appended beyond existing blocks.  
+- **Zero-copy append**: Once a block is allocated, elements are placed directly without moving existing data.  
+- **Fast indexing via precomputed starts**: Compute which block and offset an index belongs to using either logarithms or precomputed arrays.  
+- **Allocator agnostic**: Can use any bump allocator, but here it’s backed by `mmap` for efficiency and large contiguous memory chunks.  
+- **Generic and reusable**: Works with any type (`T`) without per-type overhead, using either macros in C or generics in Rust.  
+- **No deallocation per element**: Memory is reclaimed block-wise, simplifying memory management.
 
 ## Indexing
 
@@ -341,7 +351,7 @@ My first step was to make use of the macro system to create a "generic" containe
 #define LIST_TYPE(TYPE)                                                        \
   typedef struct {                                                             \
     TYPE **blocks;                                                             \
-    uint64_t len;                                                              \
+    size_t len;                                                              \
     size_t type_size;                                                          \
   } LIST_##TYPE
 
@@ -382,9 +392,9 @@ All of these macros require the index into the block and the block itself.
 ```c
 struct ListIdx {
   // which block to use for the indexing
-  uint64_t block;
+  size_t block;
   // the idx into said block
-  uint64_t block_idx;
+  size_t block_idx;
 };
 
 struct ListIdx idx_to_block_idx(size_t idx);
@@ -397,12 +407,13 @@ exploitation of the geometric series, it does however follow
 (\(\log_2\), etc.).
 
 ```c
-struct ListIdx idx_to_block_idx(size_t idx) {
-  struct ListIdx r = {0};
+inline __attribute__((always_inline, hot)) struct ListIdx idx_to_block_idx(size_t idx) {
   if (idx < LIST_DEFAULT_SIZE) {
-    r.block_idx = idx;
-    return r;
+    return (struct ListIdx){.block_idx = idx, .block = 0};
   }
+
+  size_t adjusted = idx + LIST_DEFAULT_SIZE;
+  size_t msb_pos = 63 - __builtin_clzll(adjusted);
 
   // This optimizes the block index lookup to be constant time
   //
@@ -428,24 +439,23 @@ struct ListIdx idx_to_block_idx(size_t idx) {
   // Visually:
   //
   //     Global index:  0 1 2 3 4 5 6 7  |  8  9 10 ... 23  | 24 25 ... 55  | 56
-  //     ... Block:     0                |  1               |  2            | 3
-  //     Block size:    8                | 16               | 32            | 64
+  //     ... Block:         0                 |  1              |  2 | 3 ...
+  //     Block size:    8                 | 16              | 32            | 64
   //     ... idx + LIST_DEFAULT_SIZE: 0+8=8  -> MSB pos 3 -> block 0 7+8=15 ->
   //     MSB pos 3 -> block 0 8+8=16 -> MSB pos 4 -> block 1 23+8=31-> MSB pos 4
   //     -> block 1 24+8=32-> MSB pos 5 -> block 2
 
   // shifting the geometric series so 2^i aligns with idx
-  uint64_t adjusted = idx + LIST_DEFAULT_SIZE;
-  uint64_t msb_pos = 63 - __builtin_clzll(adjusted);
 
   //   log2(LIST_DEFAULT_SIZE) = 3 for LIST_DEFAULT_SIZE = 8
 #define LOG2_OF_LIST_DEFAULT_SIZE 3
   // first block is LIST_DEFAULT_SIZE wide, this normalizes
-  r.block = msb_pos - LOG2_OF_LIST_DEFAULT_SIZE;
+  size_t block = msb_pos - LOG2_OF_LIST_DEFAULT_SIZE;
+  size_t start_index_of_block =
+      (LIST_DEFAULT_SIZE << block) - LIST_DEFAULT_SIZE;
+  size_t block_idx = idx - start_index_of_block;
 
-  uint64_t start_index_of_block = LIST_DEFAULT_SIZE * ((1UL << r.block) - 1);
-  r.block_idx = idx - start_index_of_block;
-  return r;
+  return (struct ListIdx){.block_idx = block_idx, .block = block};
 }
 ```
 
@@ -900,10 +910,248 @@ As introduced in [Segmented Lists vs Dynamic
 Arrays](#segmented-lists-vs-dynamic-arrays), a segmented list consists of
 segments. Each segment is lazily allocated and doubles in size to the previous
 one. The first segment is of size `8`, the next `16`, the next `32`, and so on.
+Keeping track of these sizes and the starting point is crucial for indexing.
 
-## Optimisations
+```rust
+// 24 blocks means around 134mio elements, thats enough I think
+pub const BLOCK_COUNT: usize = 24;
+pub const START_SIZE: usize = 8;
+pub const BLOCK_STARTS: [usize; BLOCK_COUNT] = {
+    let mut arr = [0usize; BLOCK_COUNT];
+    let mut i = 0;
+    while i < BLOCK_COUNT {
+        arr[i] = START_SIZE * ((1 << i) - 1);
+        i += 1;
+    }
+    arr
+};
 
-<!-- TODO: provide context for these -->
+/// SegmentedIdx represents a cached index lookup into the segmented list, computed with
+/// `SegmentedList::compute_segmented_idx`, can be used with `SegmentedList::get_with_segmented_idx`
+/// and `SegmentedList::get_mut_with_segmented_idx`.
+///
+/// Primary usecase is to cache the lookup of many idxes, thus omiting the lookup computation which
+/// can be too heavy in intensive workloads.
+#[derive(Copy, Clone)]
+struct SegmentedIdx(usize, usize);
+
+/// SegmentedList is a drop in `std::vec::Vec` replacement providing zero cost growing and stable
+/// pointers even after grow with `::push`.
+///
+/// The list is implemented by chaining blocks of memory to store its elements. Each block is
+/// allocated on demand when an index falls into it (for instance during appends), starting at
+/// `START_SIZE` elements in the first block and doubling the block size for each subsequent
+/// allocation. This continues until `BLOCK_COUNT` is reached. Existing blocks are never moved or
+/// reallocated, so references into the list remain valid across growth operations.
+///
+/// This makes the SegmentedList an adequate replacement for `std::vec::Vec` when dealing with
+/// heavy and unpredictable growth workloads due the omission of copy/move overhead on expansion.
+pub struct SegmentedList<T> {
+    blocks: [*mut std::mem::MaybeUninit<T>; BLOCK_COUNT],
+    block_lengths: [usize; BLOCK_COUNT],
+    allocator: SegmentedAlloc,
+    len: usize,
+}
+```
+
+`SegmentedList` holds an array of segments (`blocks`), an array of their
+lengths (`block_lengths`), the allocator used to do any allocation and the
+count of the currently contained elements, overarching all segments - `len`.
+
+The main logic for indexing is encoded in the `SegmentedIdx(segment, offset)`
+struct and its producer: `idx_to_block_idx`.
+
+```rust
+impl <T> SegmentedList<T> {
+
+    // [...]
+
+    #[inline(always)]
+    fn idx_to_block_idx(&self, idx: usize) -> SegmentedIdx {
+        if idx < START_SIZE {
+            return SegmentedIdx(0, idx);
+        }
+        let adjusted = idx + START_SIZE;
+        let msb_pos = core::mem::size_of::<usize>() * 8 - 1 - adjusted.leading_zeros() as usize;
+        let block = msb_pos - (START_SIZE.trailing_zeros() as usize);
+        SegmentedIdx(block, idx - BLOCK_STARTS[block])
+    }
+
+    // [...]
+
+}
+```
+
+In comparison to the C implementation, the Rust one doesnt lazy allocate the
+first chunk, but eagerly allocates its first segment in `Self::new` (I don't
+remember why I did that):
+
+```rust
+impl <T> SegmentedList<T> {
+    pub fn new() -> Self {
+        let mut s = Self {
+            blocks: [std::ptr::null_mut(); BLOCK_COUNT],
+            block_lengths: [0; BLOCK_COUNT],
+            allocator: SegmentedAlloc::new(),
+            len: 0,
+        };
+
+        let element_count = START_SIZE;
+        let as_bytes = element_count * size_of::<T>();
+        s.blocks[0] = s
+            .allocator
+            .request(Layout::from_size_align(as_bytes, align_of::<T>()).unwrap())
+            .as_ptr() as *mut MaybeUninit<T>;
+        s.block_lengths[0] = element_count;
+        s
+    }
+
+    // [...]
+
+}
+```
+
+Allocating a new segment (`Self::alloc_block`) outside of `Self::new` happens
+when the current segment is out of space in any appending method, for instance
+`Self::push(T)`:
+
+```rust
+impl <T> SegmentedList<T> {
+    // [...]
+
+    #[inline(always)]
+    fn alloc_block(&mut self, block: usize) {
+        use std::alloc::Layout;
+        use std::mem::{MaybeUninit, align_of, size_of};
+
+        let elems = START_SIZE << block;
+        let bytes = elems * size_of::<T>();
+        let layout = Layout::from_size_align(bytes, align_of::<T>())
+            .expect("Invalid layout for SegmentedList block");
+
+        let ptr = self.allocator.request(layout).as_ptr() as *mut MaybeUninit<T>;
+        debug_assert!(!ptr.is_null(), "SegmentedAlloc returned null");
+
+        self.blocks[block] = ptr;
+        self.block_lengths[block] = elems;
+    }
+
+    pub fn push(&mut self, v: T) {
+        let SegmentedIdx(block, block_index) = self.idx_to_block_idx(self.len);
+        if self.block_lengths[block] == 0 {
+            self.alloc_block(block);
+        }
+        unsafe {
+            (*self.blocks[block].add(block_index)).write(v);
+        }
+        self.len += 1;
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&T> {
+        if idx >= self.len {
+            return None;
+        }
+        let SegmentedIdx(block, block_index) = self.idx_to_block_idx(idx);
+        Some(unsafe { (*self.blocks[block].add(block_index)).assume_init_ref() })
+    }
+
+    // [...]
+}
+```
+
+Since I want to provide somewhat of a `std::vec::Vec` drop in replacement, I
+added a truckload of methods vec also supports. Due to the already way too
+large nature of this article I'll restrict myself to `to_vec`, `capacity`,
+`clear` and `impl<T: Clone + Copy> Clone for SegmentedList<T>`, since these
+are somewhat non-trivial:
+
+```rust
+impl<T> SegmentedList<T> {
+    /// Collects self and its contents into a vec
+    pub fn to_vec(mut self) -> Vec<T> {
+        let mut result = Vec::with_capacity(self.len);
+        let mut remaining = self.len;
+
+        for block_idx in 0..BLOCK_COUNT {
+            if remaining == 0 {
+                break;
+            }
+
+            let len = self.block_lengths[block_idx];
+            if len == 0 {
+                break;
+            }
+
+            let ptr = self.blocks[block_idx];
+            let take = remaining.min(len);
+            for i in 0..take {
+                let value = unsafe { (*ptr.add(i)).assume_init_read() };
+                result.push(value);
+            }
+            remaining -= take;
+            // We "forget" the block, no dealloc, bump allocator manages memory
+            self.blocks[block_idx] = std::ptr::null_mut();
+        }
+        result
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.block_lengths.iter().copied().sum()
+    }
+
+    pub fn clear(&mut self) {
+        let mut remaining = self.len;
+        for block_idx in 0..BLOCK_COUNT {
+            if remaining == 0 {
+                break;
+            }
+            let len = self.block_lengths[block_idx];
+            let ptr = self.blocks[block_idx];
+            if len == 0 {
+                break;
+            }
+            let take = remaining.min(len);
+            for i in 0..take {
+                unsafe { (*ptr.add(i)).assume_init_drop() };
+            }
+            remaining -= take;
+        }
+        self.len = 0;
+    }
+}
+
+impl<T: Clone + Copy> Clone for SegmentedList<T> {
+    fn clone(&self) -> Self {
+        let mut new_list = SegmentedList::new();
+        new_list.len = self.len;
+
+        for block_idx in 0..BLOCK_COUNT {
+            if self.block_lengths[block_idx] == 0 {
+                break;
+            }
+            let src_ptr = self.blocks[block_idx];
+            let elems = self.block_lengths[block_idx];
+            if elems == 0 {
+                continue;
+            }
+            new_list.alloc_block(block_idx);
+            let dst_ptr = new_list.blocks[block_idx];
+
+            for i in 0..elems {
+                unsafe {
+                    let val = (*src_ptr.add(i)).assume_init();
+                    (*dst_ptr.add(i)).write(val);
+                }
+            }
+            new_list.block_lengths[block_idx] = elems;
+        }
+
+        new_list
+    }
+}
+```
+
+The attentive reader will have noticed, I snuck some small optimisations in:
 
 - Inline `alloc_block`, `idx_to_block_idx` (-2%)
 - Inline `mmap` and `munmap` (-4%)
@@ -911,6 +1159,99 @@ one. The first segment is of size `8`, the next `16`, the next `32`, and so on.
 - remove unnecessary indirections (-8%)
 
 ## segmented_rs::list::SegmentedList vs std::vec::Vec
+
+Benchmarks are of course done with criterion :
+
+```rust
+// benches/list.rs
+use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
+use segmented_rs::list::SegmentedList;
+
+pub fn bench_segmented_list(c: &mut Criterion) {
+    fn bench_push<T: Clone>(c: &mut Criterion, name: &str, template: T, count: usize) {
+        c.bench_function(name, |b| {
+            b.iter_batched(
+                || SegmentedList::new(),
+                |mut list| {
+                    for _ in 0..count {
+                        list.push(black_box(template.clone()));
+                    }
+                    black_box(list)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+
+    bench_push(c, "segmented_list_push_u64", 123u64, 10_000);
+
+    #[derive(Clone)]
+    struct MediumElem([u8; 40]);
+    bench_push(c, "segmented_list_push_medium", MediumElem([42; 40]), 1_000);
+
+    #[derive(Clone)]
+    struct HeavyElem(Box<[u8]>);
+    bench_push(
+        c,
+        "segmented_list_push_heavy_1MiB",
+        HeavyElem(vec![161u8; 1 * 1024 * 1024].into_boxed_slice()),
+        50,
+    );
+}
+
+criterion_group!(benches, bench_segmented_list);
+criterion_main!(benches);
+```
+
+The same for `std::vec::Vec`:
+
+```rust
+// benches/vec.rs
+use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
+
+pub fn bench_vec(c: &mut Criterion) {
+    fn bench_push<T: Clone>(c: &mut Criterion, name: &str, template: T, count: usize) {
+        c.bench_function(name, |b| {
+            b.iter_batched(
+                || Vec::new(),
+                |mut vec| {
+                    for _ in 0..count {
+                        vec.push(black_box(template.clone()));
+                    }
+                    black_box(vec)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+
+    bench_push(c, "vec_push_u64", 123u64, 10_000);
+
+    #[derive(Clone)]
+    struct MediumElem([u8; 40]);
+    bench_push(c, "vec_push_medium", MediumElem([42; 40]), 1_000);
+
+    #[derive(Clone)]
+    struct HeavyElem(Box<[u8]>);
+    bench_push(
+        c,
+        "vec_push_heavy_1MiB",
+        HeavyElem(vec![161u8; 1 * 1024 * 1024].into_boxed_slice()),
+        50,
+    );
+}
+
+criterion_group!(benches, bench_vec);
+criterion_main!(benches);
+```
+
+Both are runnable via via `cargo bench --bench list` and
+`cargo bench --bench vec` and result in:
+
+<!-- TODO: results -->
+
+```text
+```
 
 # Rust Pain Points
 
@@ -957,7 +1298,34 @@ one. The first segment is of size `8`, the next `16`, the next `32`, and so on.
 # What Rust does better than C (at least in this case)
 
 - Generics, looking at you `_Generic`, Rust just did it better. To be fair,
-  even Java did it better
+  even Java did it better. What even is this:
+  ```c
+  #define DBG(EXPR) //...
+  ({
+    _Pragma("GCC diagnostic push")
+    _Pragma("GCC diagnostic ignored \"-Wformat\"") __auto_type _val = (EXPR);
+    fprintf(stderr, "[%s:%d] %s = ", __FILE__, __LINE__, #EXPR);
+    _Generic((_val),
+        int: fprintf(stderr, "%d\n", _val),
+        long: fprintf(stderr, "%ld\n", _val),
+        long long: fprintf(stderr, "%lld\n", _val),
+        unsigned: fprintf(stderr, "%u\n", _val),
+        unsigned long: fprintf(stderr, "%lu\n", _val),
+        unsigned long long: fprintf(stderr, "%llu\n", _val),
+        float: fprintf(stderr, "%f\n", _val),
+        double: fprintf(stderr, "%f\n", _val),
+        const char *: fprintf(stderr, "\"%s\"\n", _val),
+        char *: fprintf(stderr, "\"%s\"\n", _val),
+        default: fprintf(stderr, "<unprintable>\n"));
+    _Pragma("GCC diagnostic pop") _val;
+  })
+  ```
+  There isn't even a way to run different functions for differing datatypes,
+  since each path has to compile and you can't pass something like a double to
+  `strlen` even if this isn't really happening, gcc still complains, see
+  [Workarounds for C11
+  _Generic](https://www.chiark.greenend.org.uk/~sgtatham/quasiblog/c11-generic/).
+
 - Drop implementations and traits in general are so much better than any C
   alternative, even though I can think of at least 3 shittier ways to emulate
   traits in C
