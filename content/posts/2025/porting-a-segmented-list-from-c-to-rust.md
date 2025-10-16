@@ -1,11 +1,10 @@
 ---
 title: "Porting a Segmented List From C to Rust"
 summary: "Macros, Token pasting and Custom allocators vs Traits, `Option<Box<[MaybeUninit<T>]>>` and the borrow checker"
-date: 2025-09-28
+date: 2025-10-16
 tags:
   - rust
-  - c
-draft: true
+  - C
 math: true
 ---
 
@@ -86,17 +85,19 @@ segmented lists beat dynamic arrays by 2-4x.
 
 ## Design
 
+As the name implies, the list consists of segments. Each segment's size is that
+of its predecessor multiplied by an implementation-defined growth factor, often
+1.5 or 2, this results in geometric growth, reducing the amount of syscalls
+while growing progressively larger.
 
-<!-- TODO: -->
 
-- **Segmented storage**: The list grows in *blocks*, each larger than the previous, instead of reallocating a single contiguous array.  
-- **Geometric growth**: Block sizes increase geometrically (\(s_0; λ \cdot s_0; λ^2 \cdot s_0; \textrm{...}\)) to reduce syscalls / allocations.  
-- **Lazy allocation**: Blocks are only allocated when elements are appended beyond existing blocks.  
-- **Zero-copy append**: Once a block is allocated, elements are placed directly without moving existing data.  
-- **Fast indexing via precomputed starts**: Compute which block and offset an index belongs to using either logarithms or precomputed arrays.  
-- **Allocator agnostic**: Can use any bump allocator, but here it’s backed by `mmap` for efficiency and large contiguous memory chunks.  
-- **Generic and reusable**: Works with any type (`T`) without per-type overhead, using either macros in C or generics in Rust.  
-- **No deallocation per element**: Memory is reclaimed block-wise, simplifying memory management.
+The first segment size is also implementation-defined, but often chosen to be
+8, a multiple of 2 is, as always, favorable for aligned access and storage.
+Segments are lazily allocated when they are about to be used. There is no
+deallocation per element, but rather per segment, at least in this example. The
+main upside of segmented lists is their zero-copy growth. Other dynamic array
+implementations often require the previously stored elements to be moved, thus
+also providing stable pointers.
 
 ## Indexing
 
@@ -1261,20 +1262,11 @@ criterion_main!(benches);
 Both are runnable via `cargo bench --bench list`:
 
 ```text
-segmented_list_push_u64 
-                        time:   [39.502 µs 40.156 µs 40.860 µs]
-
-segmented_list_push_medium
-                        time:   [35.512 µs 35.901 µs 36.306 µs]
-
-segmented_list_push_heavy_1MiB
-                        time:   [3.0590 ms 3.0932 ms 3.1345 ms]
-
-segmented_list_push_heavy_10MiB
-                        time:   [3.3591 ms 3.3934 ms 3.4299 ms]
-
-segmented_list_push_heavy_50MiB
-                        time:   [19.895 ms 20.425 ms 21.353 ms]
+segmented_list_push_u64         time:   [39.502 µs 40.156 µs 40.860 µs]
+segmented_list_push_medium      time:   [35.512 µs 35.901 µs 36.306 µs]
+segmented_list_push_heavy_1MiB  time:   [3.0590 ms 3.0932 ms 3.1345 ms]
+segmented_list_push_heavy_10MiB time:   [3.3591 ms 3.3934 ms 3.4299 ms]
+segmented_list_push_heavy_50MiB time:   [19.895 ms 20.425 ms 21.353 ms]
 ```
 
 and `cargo bench --bench vec`:
@@ -1287,9 +1279,10 @@ vec_push_heavy_10MiB    time:   [3.7747 ms 3.8124 ms 3.8548 ms]
 vec_push_heavy_50MiB    time:   [21.718 ms 21.865 ms 22.018 ms]
 ```
 
-So it beats vec on larger thresholds, but these are only applicable when moving
-large amounts of giant blobs. The rust team did a great job at optimising
-`std::vec::Vec`.
+So it beats vec on larger elements (starting from 1MiB), but these are only
+applicable when moving large amounts of giant blobs. The rust team did a great
+job at optimising `std::vec::Vec`, my "naive" implementation comes near, but
+only outperforms on very large workloads.
 
 # Rust Pain Points
 
