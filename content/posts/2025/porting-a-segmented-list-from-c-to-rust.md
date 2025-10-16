@@ -950,6 +950,8 @@ pub struct SegmentedList<T> {
     blocks: [*mut std::mem::MaybeUninit<T>; BLOCK_COUNT],
     block_lengths: [usize; BLOCK_COUNT],
     allocator: SegmentedAlloc,
+    cur_block: usize,
+    offset_in_block: usize,
     len: usize,
 }
 ```
@@ -993,7 +995,9 @@ impl <T> SegmentedList<T> {
             blocks: [std::ptr::null_mut(); BLOCK_COUNT],
             block_lengths: [0; BLOCK_COUNT],
             allocator: SegmentedAlloc::new(),
+            cur_block: 0,
             len: 0,
+            offset_in_block: 0,
         };
 
         let element_count = START_SIZE;
@@ -1037,14 +1041,21 @@ impl <T> SegmentedList<T> {
     }
 
     pub fn push(&mut self, v: T) {
-        let SegmentedIdx(block, block_index) = self.idx_to_block_idx(self.len);
-        if self.block_lengths[block] == 0 {
-            self.alloc_block(block);
+        if self.block_lengths[self.cur_block] == 0 {
+            self.alloc_block(self.cur_block);
         }
+
         unsafe {
-            (*self.blocks[block].add(block_index)).write(v);
+            (*self.blocks[self.cur_block].add(self.offset_in_block)).write(v);
         }
+
         self.len += 1;
+        self.offset_in_block += 1;
+
+        if self.offset_in_block == self.block_lengths[self.cur_block] {
+            self.cur_block += 1;
+            self.offset_in_block = 0;
+        }
     }
 
     pub fn get(&self, idx: usize) -> Option<&T> {
@@ -1151,16 +1162,18 @@ impl<T: Clone + Copy> Clone for SegmentedList<T> {
 }
 ```
 
-The attentive reader will have noticed, I snuck some small optimisations in:
+The attentive reader will have noticed I snuck some small optimisations in:
 
-- Inline `alloc_block`, `idx_to_block_idx` (-2%)
-- Inline `mmap` and `munmap` (-4%)
-- precompute block boundaries in `BLOCK_STARTS` (-41%)
-- remove unnecessary indirections (-8%)
+- Inline `alloc_block`, `idx_to_block_idx` (-2% runtime)
+- Inline `mmap` and `munmap` (-4% runtime)
+- precompute block boundaries in `BLOCK_STARTS` (-41% runtime)
+- cache `SegmentedIdx` computation for `Self::push` via `cur_block` and
+  `offset_in_block`
+- remove unnecessary indirections (-8% runtime)
 
 ## segmented_rs::list::SegmentedList vs std::vec::Vec
 
-Benchmarks are of course done with criterion :
+Benchmarks are of course done with criterion:
 
 ```rust
 // benches/list.rs
@@ -1245,13 +1258,38 @@ criterion_group!(benches, bench_vec);
 criterion_main!(benches);
 ```
 
-Both are runnable via via `cargo bench --bench list` and
-`cargo bench --bench vec` and result in:
-
-<!-- TODO: results -->
+Both are runnable via `cargo bench --bench list`:
 
 ```text
+segmented_list_push_u64 
+                        time:   [39.502 µs 40.156 µs 40.860 µs]
+
+segmented_list_push_medium
+                        time:   [35.512 µs 35.901 µs 36.306 µs]
+
+segmented_list_push_heavy_1MiB
+                        time:   [3.0590 ms 3.0932 ms 3.1345 ms]
+
+segmented_list_push_heavy_10MiB
+                        time:   [3.3591 ms 3.3934 ms 3.4299 ms]
+
+segmented_list_push_heavy_50MiB
+                        time:   [19.895 ms 20.425 ms 21.353 ms]
 ```
+
+and `cargo bench --bench vec`:
+
+```text
+vec_push_u64            time:   [32.955 µs 33.463 µs 33.961 µs]
+vec_push_medium         time:   [28.725 µs 29.058 µs 29.435 µs]
+vec_push_heavy_1MiB     time:   [3.3439 ms 3.3816 ms 3.4236 ms]
+vec_push_heavy_10MiB    time:   [3.7747 ms 3.8124 ms 3.8548 ms]
+vec_push_heavy_50MiB    time:   [21.718 ms 21.865 ms 22.018 ms]
+```
+
+So it beats vec on larger thresholds, but these are only applicable when moving
+large amounts of giant blobs. The rust team did a great job at optimising
+`std::vec::Vec`.
 
 # Rust Pain Points
 
