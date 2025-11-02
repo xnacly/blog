@@ -9,145 +9,41 @@
     <footer>{{ partial "footer.html" . }}</footer>
   </body>
   <script>
-    let pumpkinInterval = null;
-    const pumpkins = [];
-    let lastX = null;
-    let lastY = null;
-    const HITBOX_PADDING = 20;
+    let snowflakeInterval = null;
+    const snowflakes = [];
 
-    function spawnPumpkin() {
-      const pumpkin = document.createElement("span");
-      pumpkin.className = "emoji";
-      pumpkin.textContent = "🎃";
-      pumpkin.style.left = Math.random() * window.innerWidth + "px";
-      pumpkin.style.fontSize = 16 + Math.random() * 32 + "px";
-      pumpkin.style.animationDuration = 2 + Math.random() * 3 + "s";
-      document.body.appendChild(pumpkin);
-      pumpkins.push(pumpkin);
-      const duration = parseFloat(pumpkin.style.animationDuration) * 1000;
+    function spawnSnowflake() {
+      const snowflake = document.createElement("span");
+      snowflake.className = "emoji";
+      snowflake.textContent = "❄️";
+      snowflake.style.left = Math.random() * window.innerWidth + "px";
+      snowflake.style.fontSize = 8 + Math.random() * 16 + "px";
+      snowflake.style.opacity = 0.5 + Math.random() * 0.5;
+      snowflake.style.animationDuration = 5 + Math.random() * 10 + "s";
+      document.body.appendChild(snowflake);
+      snowflakes.push(snowflake);
+      const duration = parseFloat(snowflake.style.animationDuration) * 1000;
       setTimeout(() => {
-        pumpkin.remove();
-        const index = pumpkins.indexOf(pumpkin);
-        if (index !== -1) pumpkins.splice(index, 1);
+        snowflake.remove();
+        const index = snowflakes.indexOf(snowflake);
+        if (index !== -1) snowflakes.splice(index, 1);
       }, duration);
     }
 
-    function startPumpkins() {
-      if (!pumpkinInterval) pumpkinInterval = setInterval(spawnPumpkin, 100);
+    function startSnowflake() {
+      if (!snowflakeInterval) snowflakeInterval = setInterval(spawnSnowflake, 100);
     }
 
-    function stopPumpkins() {
-      clearInterval(pumpkinInterval);
-      pumpkinInterval = null;
+    function stopSnowflake() {
+      clearInterval(snowflakeInterval);
+      snowflakeInterval = null;
     }
 
     window.addEventListener("scroll", () => {
-      if (window.scrollY === 0) startPumpkins();
+      if (window.scrollY === 0) startSnowflake();
       else stopPumpkins();
     });
 
-    if (window.scrollY === 0) startPumpkins();
-
-    function miniExplosion(x, y, count = 8) {
-      for (let i = 0; i < count; i++) {
-        const particle = document.createElement("span");
-        particle.className = "particle";
-
-        document.body.appendChild(particle);
-
-        const angle = Math.random() * 2 * Math.PI;
-        const distance = 20 + Math.random() * 30;
-        const dx = Math.cos(angle) * distance;
-        const dy = Math.sin(angle) * distance;
-
-        particle.style.left = x + "px";
-        particle.style.top = y + "px";
-
-        requestAnimationFrame(() => {
-          particle.style.transform = `translate(${dx}px, ${dy}px)`;
-          particle.style.opacity = "0";
-        });
-
-        setTimeout(() => particle.remove(), 500);
-      }
-    }
-
-    document.addEventListener("mousemove", (e) => {
-      if (!pumpkinInterval) return;
-      if (lastX === null || lastY === null) {
-        lastX = e.clientX;
-        lastY = e.clientY;
-        return;
-      }
-
-      const x1 = lastX,
-        y1 = lastY;
-      const x2 = e.clientX,
-        y2 = e.clientY;
-
-      // Draw visual slash
-      const line = document.createElement("span");
-      line.style.position = "fixed";
-      line.style.pointerEvents = "none";
-      line.style.background = "white";
-      line.style.opacity = "0.8";
-      line.style.zIndex = "999999";
-      const dx = x2 - x1;
-      const dy = y2 - y1;
-      const length = Math.hypot(dx, dy);
-      line.style.width = length + "px";
-      line.style.height = "4px"; // thicker visual slash
-      line.style.left = x1 + "px";
-      line.style.top = y1 + "px";
-      const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-      line.style.transform = `rotate(${angle}deg)`;
-      line.style.transformOrigin = "0 0";
-      document.body.appendChild(line);
-      setTimeout(() => line.remove(), 100);
-
-      // Check collisions with pumpkins
-      pumpkins.forEach((p) => {
-        const rect = p.getBoundingClientRect();
-        const expandedRect = {
-          left: rect.left - HITBOX_PADDING,
-          right: rect.right + HITBOX_PADDING,
-          top: rect.top - HITBOX_PADDING,
-          bottom: rect.bottom + HITBOX_PADDING,
-        };
-        if (
-          (x1 >= expandedRect.left &&
-            x1 <= expandedRect.right &&
-            y1 >= expandedRect.top &&
-            y1 <= expandedRect.bottom) ||
-          (x2 >= expandedRect.left &&
-            x2 <= expandedRect.right &&
-            y2 >= expandedRect.top &&
-            y2 <= expandedRect.bottom)
-        ) {
-          pumpkinSlash(p);
-        }
-      });
-
-      lastX = x2;
-      lastY = y2;
-    });
-
-    function pumpkinSlash(pumpkin) {
-      const rect = pumpkin.getBoundingClientRect();
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-
-      pumpkin.style.transition = "transform 0.3s, opacity 0.3s";
-      pumpkin.style.transform = "rotate(45deg) scale(0)";
-      pumpkin.style.opacity = "0";
-
-      miniExplosion(centerX, centerY, 12); // spawn explosion particles
-
-      setTimeout(() => {
-        pumpkin.remove();
-        const index = pumpkins.indexOf(pumpkin);
-        if (index !== -1) pumpkins.splice(index, 1);
-      }, 300);
-    }
+    if (window.scrollY === 0) startSnowflake();
   </script>
 </html>
