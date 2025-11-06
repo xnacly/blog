@@ -8,25 +8,94 @@ tags:
   - rust
 ---
 
+After reading about the process the Linux kernel performs to execute binaries,
+I thought: I want to write an armv7 emulator - `stinkarm`. Understand the ELF
+format, the encoding of ARM 32bit instructions, the execution of arm assembly and
+how it all fits together (this will help me with the JIT for my programming
+language I am currently designing). Thus, no dependencies and of course Rust! I
+already have enough C projects at the moment.
+
+So I wrote the smallest binary I could think of:
+
+```armasm
+    .global _start  @ declare _start as a global
+_start:             @ start is the defacto entry point
+    mov r0, #161    @ first and only argument to the exit syscall
+    mov r7, #1      @ exit syscall (1)
+    svc #0          @ trapping into the kernel (thats US, since we are translating)
+```
+
+To execute this arm assembly on my x86 system, I need to:
+
+1. Parse the ELF, validate it is armv7 and statically executable (I don't want
+   to write a dynamic dependency resolver and loader)
+2. Map the segments defined in ELF into the host memory, forward memory access
+3. Emulate the CPU, its state and registers
+4. Decode armv7 instructions and convert them into a nice Rust enum 
+5. Execute the instructions and apply their effects to the CPU state
+6. Translate and forward syscalls
+
+Sounds easy? It is!
+
+# Minimalist arm setup and smallest possible arm binary
+
+Lets create a makefile and nix flake, so the asm is converted into armv7
+machine code in a armv7 binary on my non armv7 system :^)
+
+```makefile
+all: examples/asm.elf
+
+examples/asm.elf: examples/main.S
+	arm-none-eabi-as -march=armv7-a $< -o main.o
+	arm-none-eabi-ld -Ttext=0x8000 main.o -o $@
+	rm main.o
+
+clean:
+	rm -f examples/asm.elf
+```
+
+```nix
+{
+  description = "stinkarm — ARMv7 userspace binary emulator for x86 linux systems";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
+  outputs = { self, nixpkgs, flake-utils, ... }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = import nixpkgs { inherit system; };
+      in {
+        devShells.default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            gcc-arm-embedded
+            binutils
+            qemu
+          ];
+        };
+      });
+}
+```
+
 # Parsing ELF
 
-So there are some ressources for parsing ELF, two of them I used a whole lot:
+So there are some resources for parsing ELF, two of them I used a whole lot:
 
 1. [`man elf`](https://linux.die.net/man/5/elf) _(remember to `export MANPAGER='nvim +Man!'`)_
 2. [gabi.xinuos.com](https://gabi.xinuos.com/index.html)
 
 At a high level, ELF (32bit, for armv7) consists of headers and segments, it
-holds an Elf header, multiple program headers and the rest we don't care about,
+holds an Elf header, multiple program headers and the rest I don't care about,
 since this emulator is only for static binaries, no dynamically linked support.
 
 ## Elf32_Ehdr
 
-The elf header is exactly 52 bytes long and holds all data we need to find the
-program headers and wheter we even want to emulate the binary we are currently
-parsing. These criterias are defined as members of the `Identifier` at the
+The elf header is exactly 52 bytes long and holds all data I need to find the
+program headers and whether I even want to emulate the binary I'm are currently
+parsing. These criteria are defined as members of the `Identifier` at the
 start of the header.
 
-In terms of byte layout level we have:
+In terms of byte layout:
 
 | bytes  | structure                        |
 | ------ | -------------------------------- |
@@ -101,9 +170,9 @@ pub struct Header {
 }
 ```
 
-The identifier is 16 bytes long and holds the previously mentioned info so we
-can check if we even want to emulate the binary, for instance the endianness
-and the bit class, in the `TryFrom` impl we strictly check what we parsed:
+The identifier is 16 bytes long and holds the previously mentioned info so I
+can check if I want to emulate the binary, for instance the endianness and the
+bit class, in the `TryFrom` implementation I strictly check what is parsed:
 
 ```rust
 /// 2.2 ELF Identification: https://gabi.xinuos.com/elf/02-eheader.html#elf-identification
@@ -149,7 +218,7 @@ impl TryFrom<&[u8]> for Identifier {
             return Err("e_ident too short for ELF");
         }
 
-        // I dont want to cast via unsafe as_ptr and as Header because the header could outlive the
+        // I don't want to cast via unsafe as_ptr and as Header because the header could outlive the
         // source slice, thus we just do it the old plain indexing way
         let ident = Self {
             magic: bytes[0..4].try_into().unwrap(),
@@ -185,7 +254,7 @@ impl TryFrom<&[u8]> for Identifier {
     }
 ```
 
-`Type` and `Machine` are just enums encoding meaning in the Rust typesystem:
+`Type` and `Machine` are just enums encoding meaning in the Rust type system:
 
 ```rust
 /// This member identifies the object file type.
@@ -247,7 +316,7 @@ impl TryFrom<u16> for Machine {
 ```
 
 Since all of `Header`'s members implement `TryFrom` we can implement
-`TryFrom<&[u8]> for Header` and propagate all occuring errors in member parsing
+`TryFrom<&[u8]> for Header` and propagate all occurring errors in member parsing
 cleanly via `?`:
 
 ```rust
@@ -289,7 +358,7 @@ impl TryFrom<&[u8]> for Header {
 ```
 
 The attentive reader will see me using `le16!` and `le32!` for parsing bytes
-into unsigned intergers of different classes:
+into unsigned integers of different classes:
 
 ```rust
 #[macro_export]
