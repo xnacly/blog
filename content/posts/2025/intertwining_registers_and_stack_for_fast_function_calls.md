@@ -3,7 +3,7 @@ title: "Hybrid Register/Stack VM for Faster Function Calls"
 summary: " Designing a calling convention by merging registers and a stack into the purple-garden vm"
 date: 2025-06-01
 tags:
-  - C
+  - c
   - pldev
 ---
 

@@ -4,7 +4,7 @@ summary: "Making compilation pipelines fast, starting with the tokenizer"
 date: 2025-07-14
 math: true
 tags:
-  - C
+  - c
   - pldev
 ---
 

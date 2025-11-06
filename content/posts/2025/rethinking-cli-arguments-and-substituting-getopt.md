@@ -3,7 +3,7 @@ title: "Rethinking How I Deal With CLI Arguments (replacing getopt)"
 summary: "Shortcomings of getopt, parsing CLI arguments into flags, no POSIX and a lot of implementation details"
 date: 2025-05-10
 tags:
-  - C
+  - c
 ---
 
 This article covers the issues I found myself having while using `getopt.h` for
