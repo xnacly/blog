@@ -1,7 +1,7 @@
 ---
 title: "Building a Minimal Viable Armv7 Emulator"
 date: 2025-11-06
-summary: "Emulating ARMv7 is suprisingly easy, even from scratch AND in Rust"
+summary: "Emulating armv7 is surprisingly easy, even from scratch AND in Rust"
 draft: true
 tags:
   - arm
@@ -10,10 +10,10 @@ tags:
 
 After reading about the process the Linux kernel performs to execute binaries,
 I thought: I want to write an armv7 emulator - `stinkarm`. Understand the ELF
-format, the encoding of ARM 32bit instructions, the execution of arm assembly and
-how it all fits together (this will help me with the JIT for my programming
-language I am currently designing). Thus, no dependencies and of course Rust! I
-already have enough C projects at the moment.
+format, the encoding of arm 32bit instructions, the execution of arm assembly
+and how it all fits together (this will help me with the JIT for my programming
+language I am currently designing). Thus, no dependencies. And of course Rust!
+I already have enough C projects right now.
 
 So I wrote the smallest binary I could think of:
 
@@ -31,7 +31,7 @@ To execute this arm assembly on my x86 system, I need to:
    to write a dynamic dependency resolver and loader)
 2. Map the segments defined in ELF into the host memory, forward memory access
 3. Emulate the CPU, its state and registers
-4. Decode armv7 instructions and convert them into a nice Rust enum 
+4. Decode armv7 instructions and convert them into a nice Rust enum
 5. Execute the instructions and apply their effects to the CPU state
 6. Translate and forward syscalls
 
@@ -39,8 +39,9 @@ Sounds easy? It is!
 
 # Minimalist arm setup and smallest possible arm binary
 
-Lets create a makefile and nix flake, so the asm is converted into armv7
-machine code in a armv7 binary on my non armv7 system :^)
+Before I start parsing ELF I'll need a binary to emulate, so lets create a
+makefile and nix flake, so the asm is converted into armv7 machine code in a
+armv7 binary on my non armv7 system :^)
 
 ```makefile
 all: examples/asm.elf
@@ -90,29 +91,37 @@ since this emulator is only for static binaries, no dynamically linked support.
 
 ## Elf32_Ehdr
 
-The elf header is exactly 52 bytes long and holds all data I need to find the
-program headers and whether I even want to emulate the binary I'm are currently
-parsing. These criteria are defined as members of the `Identifier` at the
-start of the header.
+The ELF header is exactly 52 bytes long and holds all data I need to find the
+program headers and whether I even want to emulate the binary I'm currently
+parsing. These criteria are defined as members of the `Identifier` at the beg
+of the header.
 
 In terms of byte layout:
 
-| bytes  | structure                        |
-| ------ | -------------------------------- |
-| 0..16  | Identifier|
-| 16..18 | Type                             |
-| 18..20 | Machine                          |
-| 20..24 | version                          |
-| 24..28 | entry                            |
-| 28..32 | phoff                            |
-| 32..36 | shoff                            |
-| 36..40 | flags                            |
-| 40..42 | ehsize                           |
-| 42..44 | phentsize                        |
-| 44..46 | phnum                            |
-| 46..48 | shentsize                        |
-| 48..50 | shnum                            |
-| 50..52 | shstrndx                         |
+```shell
+$ xxd -g1 -l52 examples/asm.elf
+00000000: 7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00  .ELF............
+00000010: 02 00 28 00 01 00 00 00 00 80 00 00 34 00 00 00  ..(.........4...
+00000020: dc 11 00 00 00 02 00 05 34 00 20 00 01 00 28 00  ........4. ...(.
+00000030: 08 00 07 00                                      ....
+```
+
+| bytes  | structure  |
+| ------ | ---------- |
+| 0..16  | Identifier |
+| 16..18 | Type       |
+| 18..20 | Machine    |
+| 20..24 | version    |
+| 24..28 | entry      |
+| 28..32 | phoff      |
+| 32..36 | shoff      |
+| 36..40 | flags      |
+| 40..42 | ehsize     |
+| 42..44 | phentsize  |
+| 44..46 | phnum      |
+| 46..48 | shentsize  |
+| 48..50 | shnum      |
+| 50..52 | shstrndx   |
 
 ```rust
 /// Representing the ELF Object File Format header in memory, equivalent to Elf32_Ehdr in 2. ELF
@@ -386,7 +395,7 @@ macro_rules! le32 {
 
 # Dumping ELF segments into memory
 
-# Decoding ARMv7
+# Decoding armv7
 
 ## Immediate instructions
 
