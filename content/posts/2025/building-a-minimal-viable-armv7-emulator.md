@@ -9,8 +9,7 @@ tags:
 ---
 
 After reading about the process the Linux kernel performs to execute binaries,
-I thought: I want to write an armv7 emulator -
-[`stinkarm`](https://github.com/xnacly/stinkarm). Mosty to understand the ELF
+I thought: I want to write an armv7 emulator - [`stinkarm`](https://github.com/xnacly/stinkarm). Mostly to understand the ELF
 format, the encoding of arm 32bit instructions, the execution of arm assembly
 and how it all fits together (this will help me with the JIT for my programming
 language I am currently designing). To fully understand everything: no
@@ -80,7 +79,7 @@ clean:
 }
 ```
 
-# Step 1: Parsing ELF
+# Parsing ELF
 
 So there are some resources for parsing ELF, two of them I used a whole lot:
 
@@ -730,11 +729,77 @@ let segment = sys::mmap::mmap(
 ```
 
 But this means the segment of the process to emulate is not at `0x8000`, but
-anywhere the kernel allows.
+anywhere the kernel allows. So we need to add a translation layer between guest
+and host memory. If you're familiar with how virtual memory works, its similar
+but one more indirection.
 
-Fixing this with a translation unit has the added benfit of allowing us to
-sandbox guest memory fully, so we can validate each memory access before we
-allow a guest to host memory interaction.
+```rust
+struct MappedSegment {
+    host_ptr: *mut u8,
+    len: u32,
+}
+
+pub struct Mem {
+    maps: BTreeMap<u32, MappedSegment>,
+}
+
+impl Mem {
+    pub fn new() -> Self {
+        Self {
+            maps: BTreeMap::new(),
+        }
+    }
+
+    pub fn map_region(&mut self, guest_addr: u32, len: u32, host_ptr: *mut u8) {
+        self.maps
+            .insert(guest_addr, MappedSegment { host_ptr, len });
+    }
+
+    /// translate a guest addr to a host addr we can write and read from
+    pub fn translate(&self, guest_addr: u32) -> Option<*mut u8> {
+        // Find the greatest key <= guest_addr.
+        let (&base, seg) = self.maps.range(..=guest_addr).next_back()?;
+        if guest_addr < base + seg.len {
+            let offset = guest_addr - base;
+            Some(unsafe { seg.host_ptr.add(offset as usize) })
+        } else {
+            None
+        }
+    }
+
+    pub fn read_u32(&self, guest_addr: u32) -> Option<u32> {
+        let ptr = self.translate(guest_addr)?;
+        unsafe { Some(u32::from_le(*(ptr as *const u32))) }
+    }
+
+    pub fn write_u32(&mut self, guest_addr: u32, value: u32) -> Result<(), &'static str> {
+        let ptr = self.translate(guest_addr).ok_or_else(|| "hola")?;
+        unsafe { *(ptr as *mut u32) = value.to_le() }
+        Ok(())
+    }
+
+    /// dropping all segments, consumes self to make it single use and not allow any self usages
+    /// after dropping
+    pub fn destroy(self) {
+        for (guest_addr, seg) in self.maps {
+            if let Some(nnptr) = std::ptr::NonNull::new(seg.host_ptr) {
+                if let Err(e) = sys::mmap::munmap(nnptr, seg.len as usize) {
+                    eprintln!(
+                        "Warning: failed to munmap guest segment @ {:#010x} (len={}): {:?}",
+                        guest_addr, seg.len, e
+                    );
+                }
+            }
+        }
+    }
+}
+```
+
+This fix has the added benfit of allowing us to sandbox guest memory fully, so
+we can validate each memory access before we allow a guest to host memory
+interaction.
+
+## Mapping segments with their permissions
 
 # Decoding armv7
 
