@@ -653,10 +653,17 @@ Program Headers:
 
 # Dumping ELF segments into memory
 
-Before putting each segment into its `Pheader::vaddr`, we have to understand,
-that one doesn't simply `mmap` with `MAP_FIXED` or `MAP_NOREPLACE` into the
-virtual address `0x8000`. The linux kernel won't let us, and rightfully so,
-`man mmap` says:
+Since the only reason for parsing the elf headers is to know where to put what
+segment with which permissons, I want to quickly interject on why we have to
+put said segments at these specific adresses. The main reason is that all
+pointers, all offsets and pc related decodings have to be done relative to
+`Elf32_Ehdr.entry` and the linker generated all instruction arguments according
+to this value.
+
+Before mapping each segment at its `Pheader::vaddr`, we have to understand:
+One doesn't simply `mmap` with `MAP_FIXED` or `MAP_NOREPLACE` into the virtual
+address `0x8000`. The linux kernel won't let us, and rightfully so, `man mmap`
+says:
 
 > If addr is not NULL, then the kernel takes it as a hint about where to place
 > the mapping; on Linux, the kernel will pick a nearby page boundary (but
@@ -782,7 +789,7 @@ The basic idea is similar to the way a JIT compiler works:
    permissions defined in the `Pheader`
 
 ```rust
-/// mapping applys the configuration of self to the current memory context by creating the
+/// mapping applies the configuration of self to the current memory context by creating the
 /// segments with the corresponding permission bits, vaddr, etc
 pub fn map(&self, raw: &[u8], guest_mem: &mut mem::Mem) -> Result<(), String> {
     // zero memory needed case, no clue if this actually ever happens, but we support it
@@ -864,12 +871,31 @@ for phdr in elf.pheaders {
 
 # Decoding armv7
 
+We can now request a word (32bit) from our `LOAD` segment which contains
+the `.text` section bytes one can inspect via `objdump`:
+
+```text
+$ arm-none-eabi-objdump -d examples/exit.elf
+
+examples/exit.elf:     file format elf32-littlearm
+
+
+Disassembly of section .text:
+
+00008000 <_start>:
+    8000:       e3a000a1        mov     r0, #161        @ 0xa1
+    8004:       e3a07001        mov     r7, #1
+    8008:       ef000000        svc     0x00000000
+```
+
+So we use `Mem::read_u32(0x8000)` and get `0xe3a000a1`.
+
 Decoding armv7 instructions seems doable at a glance, but
 its a deeper rabbit-hole than i expected, prepare for a bit
 shifting, implicit behaviour and intertwined meaning heavy
 section:
 
-Instructions are grouped into four top level sections:
+Instructions are more or less grouped into four groups:
 
 1. Branch and control
 2. Data processing
@@ -897,7 +923,7 @@ layout is as follows:
 
 ## Rust representation
 
-Since `cond` decides wheter or not the instruction is
+Since `cond` decides whether or not the instruction is
 executed, I decided on the following struct to be the decoded
 instruction:
 
@@ -947,16 +973,485 @@ _start:
     svc #0
 ```
 
-## Immediate instructions
+## General instruction detection
+
+Our decoder is a function accepting a word, the program counter (we need
+this later for decoding the offset for `ldr`) and returning the
+aforementioned instruction container:
+
+```rust
+pub fn decode_word(word: u32, caddr: u32) -> InstructionContainer
+```
+
+Referring to the diagram shown before, I know the first 4 bit are the
+condition, so I can extract these first. I also take the top 3 bits to
+identify the instruction class (load and store, branch or data
+processing immediate):
+
+```rust
+// ...
+let cond = ((word >> 28) & 0xF) as u8;
+let top = ((word >> 25) & 0x7) as u8;
+```
+
+## Immediate mov
+
+Since there are immediate moves and non immediate moves, both `0b000` and
+`0b001` are valid top values we want to support.
+
+```rust
+// ...
+if top == 0b000 || top == 0b001 {
+    let i_bit = ((word >> 25) & 0x1) != 0;
+    let opcode = ((word >> 21) & 0xF) as u8;
+    if i_bit {
+        // ...
+    }
+}
+```
+
+If the i bit is set, we can extract convert the opcode from its bits into
+something I can read a lot better:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Op {
+    // ...
+    Mov = 0b1101,
+}
+
+static OP_TABLE: [Op; 16] = [
+    // ...
+    Op::Mov,
+];
+
+#[inline(always)]
+fn op_from_bits(bits: u8) -> Op {
+    debug_assert!(bits <= 0b1111);
+    unsafe { *OP_TABLE.get_unchecked(bits as usize) }
+}
+```
+
+We can now plug this in, match on the only ddi (data processing immediate)
+we know and extract both the destination register (rd) and the raw
+immediate value:
+
+```rust
+if top == 0b000 || top == 0b001 {
+    // Data-processing immediate (ddi) (top 0b000 or 0b001 when I==1)
+    let i_bit = ((word >> 25) & 0x1) != 0;
+    let opcode = ((word >> 21) & 0xF) as u8;
+    if i_bit {
+        match op_from_bits(opcode) {
+            Op::Mov => {
+                let rd = ((word >> 12) & 0xF) as u8;
+                let imm12 = word & 0xFFF;
+                // ...
+            }
+            _ => todo!(),
+        }
+    }
+}
+```
+
+From the examples before one can see the immediate value is prefixed with
+`#`. To move the value `161` into `r0` we do:
+
+```asm
+mov r0, #161
+```
+
+Since we know there are only 12 bits available for the immediate the arm
+engineers came up with rotation of the resulting integer by the remaining 4
+bits:
+
+```rust
+#[inline(always)]
+fn decode_rotated_imm(imm12: u32) -> u32 {
+    let rotate = ((imm12 >> 8) & 0b1111) * 2;
+    ((imm12 & 0xff) as u32).rotate_right(rotate)
+}
+```
+
+Plugging this back in results in us being able to fully decode `mov r0,#161`:
+
+```rust
+if top == 0b000 || top == 0b001 {
+    let i_bit = ((word >> 25) & 0x1) != 0;
+    let opcode = ((word >> 21) & 0xF) as u8;
+    if i_bit {
+        match op_from_bits(opcode) {
+            Op::Mov => {
+                let rd = ((word >> 12) & 0xF) as u8;
+                let imm12 = word & 0xFFF;
+                let rhs = decode_rotated_imm(imm12);
+                return InstructionContainer {
+                    cond,
+                    instruction: Instruction::MovImm { rd, rhs },
+                };
+            }
+            _ => todo!(),
+        }
+    }
+}
+```
+
+As seen when `dbg!`-ing the cpu steps:
+
+```text
+[src/cpu/mod.rs:114:13] decoder::decode_word(word, self.pc()) =
+InstructionContainer {
+    cond: 14,
+    instruction: MovImm {
+        rd: 0,
+        rhs: 161,
+    },
+}
+```
+
+## Load and Store
+
+`ldr` is part of the load and store instruction group and is needed for
+the accessing of `Hello World!` in `.rodata` and putting a ptr to it
+into a register.
+
+In comparison to immediate mov we have to do a little trick, since we
+only want to match for load and store that matches:
+
+- single register modification
+- load and store with immediate
+
+So we only decode:
+
+```armasm
+LDR Rd, [Rn, #imm]
+LDR Rd, [Rn], #imm
+@ etc
+```
+
+Thus we match with `(top >> 1) & 0b11 == 0b01` and start extracting a
+whole bucket load of bit flags:
+
+```rust
+if (top >> 1) & 0b11 == 0b01 {
+    let p = ((word >> 24) & 1) != 0;
+    let u = ((word >> 23) & 1) != 0;
+    let b = ((word >> 22) & 1) != 0;
+    let w = ((word >> 21) & 1) != 0;
+    let l = ((word >> 20) & 1) != 0;
+    let rn = ((word >> 16) & 0xF) as u8;
+    let rd = ((word >> 12) & 0xF) as u8;
+    let imm12 = (word & 0xFFF) as u32;
+
+    // Literal‑pool version
+    if l && rn == 0b1111 && p && u && !w && !b {
+        let pc_seen = caddr.wrapping_add(8);
+        let literal_addr = pc_seen.wrapping_add(imm12);
+
+        return InstructionContainer {
+            cond,
+            instruction: Instruction::LdrLiteral {
+                rd,
+                addr: literal_addr,
+            },
+        };
+    }
+
+    todo!("only LDR with p&u&!w&!b is implemented")
+}
+```
+
+| bit | description                                      |
+| --- | ------------------------------------------------ |
+| p   | pre-indexed addressing, offset added before load |
+| u   | add (1) vs subtract (0) offset                   |
+| b   | word (0) or byte (1) sized access                |
+| w   | (no=0) write back to base                        |
+| l   | load (1), or store (0)                           |
+
+`ldr Rn, <addr>` matches exactly `load`, base register is PC (`rn==0b1111`), pre-indexed
+addressing, added offset, no write back and no byte sized access (`l &&
+rn == 0b1111 && p && u && !w && !b`).
 
 ## Syscalls
 
+Syscalls are the only way to interact with the Linux kernel (as far as I
+know), so we definitely need to implement both decoding and forwarding.
+Bits 27-24 are `1111` for system calls. The immediate value is
+irrelevant for us, since the Linux syscall handler either way discards
+the value:
+
+```rust
+if ((word >> 24) & 0xF) as u8 == 0b1111 {
+    return InstructionContainer {
+        cond,
+        // technically arm says svc has a 24bit immediate but we don't care about it, since the
+        // Linux kernel also doesn't
+        instruction: Instruction::Svc,
+    };
+}
+```
+
+We can now fully decode all instructions for both the simple exit and
+the more advanced hello world binary:
+
+```text
+[src/cpu/mod.rs:121:15] instruction = MovImm { rd: 0, rhs: 161, }
+[src/cpu/mod.rs:121:15] instruction = MovImm { rd: 7, rhs: 1, }
+[src/cpu/mod.rs:121:15] instruction = Svc
+```
+
+```text
+[src/cpu/mod.rs:121:15] instruction = MovImm { rd: 0, rhs: 1, }
+[src/cpu/mod.rs:121:15] instruction = LdrLiteral { rd: 1, addr: 32800, }
+[src/cpu/mod.rs:121:15] instruction = MovImm { rd: 2, rhs: 14, }
+[src/cpu/mod.rs:121:15] instruction = MovImm { rd: 7, rhs: 4, }
+[src/cpu/mod.rs:121:15] instruction = Svc
+[src/cpu/mod.rs:121:15] instruction = MovImm { rd: 0, rhs: 0, }
+[src/cpu/mod.rs:121:15] instruction = MovImm { rd: 7, rhs: 1, }
+[src/cpu/mod.rs:121:15] instruction = Svc
+```
+
 # Emulating the CPU
+
+This is by FAR the easiest part, I only struggled with the double
+indirection for `ldr` (I simply didn't know about it), but each problem
+at its time :^).
+
+```rust
+pub struct Cpu<'cpu> {
+    /// r0-r15 (r13=SP, r14=LR, r15=PC)
+    pub r: [u32; 16],
+    pub cpsr: u32,
+    pub mem: &'cpu mut mem::Mem,
+    /// only set by ArmSyscall::Exit to propagate exit code to the host
+    pub status: Option<i32>,
+}
+
+impl<'cpu> Cpu<'cpu> {
+    pub fn new(mem: &'cpu mut mem::Mem, pc: u32) -> Self {
+        let mut s = Self {
+            r: [0; 16],
+            cpsr: 0x60000010,
+            mem,
+            status: None,
+        };
+        s.r[15] = pc;
+        s
+    }
+```
+
+Instantiating the cpu:
+
+```rust
+let mut cpu = cpu::Cpu::new(&mut mem, elf.header.entry);
+```
+
+## Conditional Instructions?
+
+When writing the decoder I was confused by the 4 conditional bits. I always
+though one does conditional execution by using a branch to jump over
+instructions that shouldnt be executed. That was before I learned for arm,
+both ways are supported (the armv7 reference says this feature should only
+be used if there arent multiple instructions depending on the same
+condition, otherwise one should use branches) - so I need to support this
+too:
+
+```rust
+impl<'cpu> Cpu<'cpu> {
+    #[inline(always)]
+    fn cond_passes(&self, cond: u8) -> bool {
+        match cond {
+            0x0 => (self.cpsr >> 30) & 1 == 1, // EQ: Z == 1
+            0x1 => (self.cpsr >> 30) & 1 == 0, // NE
+            0xE => true,                       // AL (always)
+            0xF => false,                      // NV (never)
+            _ => false,                        // strict false
+        }
+    }
+}
+```
 
 ## Instruction dispatch
 
-## Forwarding Syscalls
+After implementing the necessary checks and setup for emulating the cpu, the
+CPU can now check if an instruction is to be executed, match on the decoded
+instruction and run the associated logic:
 
-### write
+```rust
+impl<'cpu> Cpu<'cpu> {
+    #[inline(always)]
+    fn pc(&self) -> u32 {
+        self.r[15] & !0b11
+    }
 
-### The exception: `exit`
+    /// moves pc forward a word
+    #[inline(always)]
+    fn advance(&mut self) {
+        self.r[15] = self.r[15].wrapping_add(4);
+    }
+
+    pub fn step(&mut self) -> Result<bool, err::Err> {
+        let Some(word) = self.mem.read_u32(self.pc()) else {
+            return Ok(false);
+        };
+
+        if word == 0 {
+            // zero instruction means we hit zeroed out rest of the page
+            return Ok(false);
+        }
+
+        let InstructionContainer { instruction, cond } = decoder::decode_word(word, self.pc());
+
+        if !self.cond_passes(cond) {
+            self.advance();
+            return Ok(true);
+        }
+
+        match instruction {
+            decoder::Instruction::MovImm { rd, rhs } => {
+                self.r[rd as usize] = rhs;
+            }
+            decoder::Instruction::Unknown(w) => {
+                return Err(err::Err::UnknownOrUnsupportedInstruction(w));
+            }
+            i @ _ => {
+                stinkln!(
+                    "found unimplemented instruction, exiting: {:#x}:={:?}",
+                    word,
+                    i
+                );
+                self.status = Some(1);
+            }
+        }
+
+        self.advance();
+
+        Ok(true)
+    }
+}
+```
+
+## "Double"-indirection of ldr
+
+<!-- TODO: -->
+
+## Forwarding Syscalls and other feature flag based logic
+
+Since stinkarm has three ways of dealing with syscalls (`deny`,
+`sandbox`, `forward`) I decided on handling the selection of the
+appropriate logic at cpu creation time via a function pointer attached
+to the CPU as the `syscall_handler` field:
+
+```rust{hl_lines=8}
+type SyscallHandlerFn = fn(&mut Cpu, ArmSyscall) -> i32;
+
+pub struct Cpu<'cpu> {
+    /// r0-r15 (r13=SP, r14=LR, r15=PC)
+    pub r: [u32; 16],
+    pub cpsr: u32,
+    pub mem: &'cpu mut mem::Mem,
+    syscall_handler: SyscallHandlerFn,
+    pub status: Option<i32>,
+}
+
+impl<'cpu> Cpu<'cpu> {
+    pub fn new(conf: &'cpu config::Config, mem: &'cpu mut mem::Mem, pc: u32) -> Self {
+        let syscall_handler: SyscallHandlerFn = if conf.log.contains(&Log::Syscalls) {
+            match conf.syscalls {
+                SyscallMode::Forward => |cpu, syscall| {
+                    println!("{}", syscall.print(cpu));
+                    print_i32_or_errno(translation::syscall_forward(cpu, syscall))
+                },
+                SyscallMode::Sandbox => |cpu, syscall| {
+                    println!("{} [sandbox]", syscall.print(cpu));
+                    print_i32_or_errno(sandbox::syscall_sandbox(cpu, syscall))
+                },
+                SyscallMode::Deny => |cpu, syscall| {
+                    println!("{} [deny]", syscall.print(cpu));
+                    print_i32_or_errno(sandbox::syscall_stub(cpu, syscall))
+                },
+            }
+        } else {
+            match conf.syscalls {
+                SyscallMode::Forward => translation::syscall_forward,
+                SyscallMode::Sandbox => sandbox::syscall_sandbox,
+                SyscallMode::Deny => sandbox::syscall_stub,
+            }
+        };
+        // ...
+    }
+}
+```
+
+Now the handling of a syscall is simply to execute this handler:
+
+```rust
+impl<'cpu> Cpu<'cpu> {
+    pub fn step(&mut self) -> Result<bool, err::Err> {
+        // ...
+
+        match instruction {
+            // ...
+            decoder::Instruction::Svc => {
+                self.r[0] = (self.syscall_handler)(self, ArmSyscall::try_from(self.r[7])?) as u32;
+            }
+            // ...
+        }
+        // ...
+    }
+}
+```
+
+Of course for this to work the syscall has to be implemented and even
+decodable. For this there is the `ArmSyscall` enum:
+
+```rust
+#[derive(Debug)]
+#[allow(non_camel_case_types)]
+pub enum ArmSyscall {
+    restart = 0x00,
+    exit = 0x01,
+    fork = 0x02,
+    read = 0x03,
+    write = 0x04,
+    open = 0x05,
+    close = 0x06,
+}
+
+impl TryFrom<u32> for ArmSyscall {
+    type Error = err::Err;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0x00 => Self::restart,
+            0x01 => Self::exit,
+            0x02 => Self::fork,
+            0x03 => Self::read,
+            0x04 => Self::write,
+            0x05 => Self::open,
+            0x06 => Self::close,
+            _ => return Err(err::Err::UnknownSyscall(value)),
+        })
+    }
+}
+```
+
+By default the sandboxing mode is selected, but I will go into detail on
+both sandboxing and denying syscalls later, first I want to focus on
+implementing the translation layer from armv7 to x86 syscalls.
+
+### Implementing: write
+
+<!-- TODO: -->
+
+### Handling the exception: `exit`
+
+<!-- TODO: -->
+
+### Deny and Sandbox - restricting syscalls
+
+The simplest sandboxing mode is to deny, the more complex is to allow
+some syscall interactions while others are denied. The latter requires
+checking arguments to syscalls, not just the syscall kind.
