@@ -41,19 +41,91 @@ Sounds easy? It is!
 # Minimalist arm setup and smallest possible arm binary
 
 Before I start parsing ELF I'll need a binary to emulate, so lets create a
-makefile and nix flake, so the asm is converted into armv7 machine code in a
-armv7 binary on my non armv7 system :^)
+build script called `bld_exmpl` (so I can write a lot less) and nix flake, so
+the asm is converted into armv7 machine code in a armv7 binary on my non armv7
+system :^)
 
-```makefile
-all: examples/asm.elf
+```rust
+// tools/bld_exmpl
+use clap::Parser;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
 
-examples/asm.elf: examples/main.S
-	arm-none-eabi-as -march=armv7-a $< -o main.o
-	arm-none-eabi-ld -Ttext=0x8000 main.o -o $@
-	rm main.o
+/// Build all ARM assembly examples into .elf binaries
+#[derive(Parser)]
+struct Args {
+    /// Directory containing .S examples
+    #[arg(long, default_value = "examples")]
+    examples_dir: String,
+}
 
-clean:
-	rm -f examples/asm.elf
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    let dir = Path::new(&args.examples_dir);
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("S") {
+            let name = path.file_stem().unwrap().to_str().unwrap();
+            let output = dir.join(format!("{}.elf", name));
+            build_asm(&path, &output)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn build_asm(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Building {} -> {}", input.display(), output.display());
+
+    let obj_file = input.with_extension("o");
+
+    let status = Command::new("arm-none-eabi-as")
+        .arg("-march=armv7-a")
+        .arg(input)
+        .arg("-o")
+        .arg(&obj_file)
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("Assembler failed for {}", input.display()).into());
+    }
+
+    let status = Command::new("arm-none-eabi-ld")
+        .arg("-Ttext=0x8000")
+        .arg(&obj_file)
+        .arg("-o")
+        .arg(output)
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("Linker failed for {}", output.display()).into());
+    }
+
+    Ok(fs::remove_file(obj_file)?)
+}
+```
+
+```toml
+# Cargo.toml
+[package]
+name = "stinkarm"
+version = "0.1.0"
+edition = "2024"
+default-run = "stinkarm"
+
+[dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
+
+[[bin]]
+name = "stinkarm"
+path = "src/main.rs"
+
+[[bin]]
+name = "bld_exmpl"
+path = "tools/bld_exmpl.rs"
 ```
 
 ```nix
@@ -75,7 +147,8 @@ clean:
             qemu
           ];
         };
-      });
+      }
+  );
 }
 ```
 
@@ -99,30 +172,23 @@ of the header.
 
 In terms of byte layout:
 
-| bytes  | structure  |
-| ------ | ---------- |
-| 0..16  | Identifier |
-| 16..18 | Type       |
-| 18..20 | Machine    |
-| 20..24 | version    |
-| 24..28 | entry      |
-| 28..32 | phoff      |
-| 32..36 | shoff      |
-| 36..40 | flags      |
-| 40..42 | ehsize     |
-| 42..44 | phentsize  |
-| 44..46 | phnum      |
-| 46..48 | shentsize  |
-| 48..50 | shnum      |
-| 50..52 | shstrndx   |
-
-```shell
-$ xxd -g1 -l52 examples/asm.elf
-00000000: 7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00  .ELF............
-00000010: 02 00 28 00 01 00 00 00 00 80 00 00 34 00 00 00  ..(.........4...
-00000020: dc 11 00 00 00 02 00 05 34 00 20 00 01 00 28 00  ........4. ...(.
-00000030: 08 00 07 00                                      ....
+```text
++------------------------+--------+--------+----------------+----------------+----------------+----------------+----------------+--------+---------+--------+---------+--------+--------+
+|       identifier       |  type  |machine |    version     |     entry      |     phoff      |     shoff      |     flags      | ehsize |phentsize| phnum  |shentsize| shnum  |shstrndx|
+|          16B           |   2B   |   2B   |       4B       |       4B       |       4B       |       4B       |       4B       |   2B   |   2B    |   2B   |   2B    |   2B   |   2B   |
++------------------------+--------+--------+----------------+----------------+----------------+----------------+----------------+--------+---------+--------+---------+--------+--------+
+           \|/
+            |
+            |
+            v
++----------------+------+------+-------+------+-----------+------------------------+
+|     magic      |class | data |version|os_abi|abi_version|          pad           |
+|       4B       |  1B  |  1B  |  1B   |  1B  |    1B     |           7B           |
++----------------+------+------+-------+------+-----------+------------------------+
 ```
+
+Most resources show C based examples, the rust ports are
+below:
 
 ```rust
 /// Representing the ELF Object File Format header in memory, equivalent to Elf32_Ehdr in 2. ELF
@@ -267,9 +333,6 @@ impl TryFrom<&[u8]> for Identifier {
 `Type` and `Machine` are just enums encoding meaning in the Rust type system:
 
 ```rust
-/// This member identifies the object file type.
-///
-/// https://gabi.xinuos.com/elf/02-eheader.html#contents-of-the-elf-header
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
@@ -307,8 +370,6 @@ impl TryFrom<u16> for Type {
 #[repr(u16)]
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// This member’s value specifies the required architecture for an individual file.
-/// https://gabi.xinuos.com/elf/02-eheader.html#contents-of-the-elf-header and https://gabi.xinuos.com/elf/a-emachine.html
 pub enum Machine {
     EM_ARM = 40,
 }
@@ -394,6 +455,13 @@ macro_rules! le32 {
 
 ## Elf32_Phdr
 
+```text
++----------------+----------------+----------------+----------------+----------------+----------------+----------------+----------------+
+|      type      |     offset     |     vaddr      |     paddr      |     filesz     |     memsz      |     flags      |     align      |
+|       4B       |       4B       |       4B       |       4B       |       4B       |       4B       |       4B       |       4B       |
++----------------+----------------+----------------+----------------+----------------+----------------+----------------+----------------+
+```
+
 For me, the most important fields in `Header` are `phoff` and `phentsize`,
 since we can use these to index into the binary to locate the program headers.
 
@@ -404,23 +472,12 @@ since we can use these to index into the binary to locate the program headers.
 #[derive(Debug)]
 pub struct Pheader {
     pub r#type: Type,
-    /// offset to the segment, starting from file idx
     pub offset: u32,
-    /// virtual address where the first byte of the segment lays
     pub vaddr: u32,
-    /// On systems for which physical addressing is relevant, this member is reserved for the
-    /// segment’s physical address. Because System V ignores physical addressing for application
-    /// programs, this member has unspecified contents for executable files and shared objects.
     pub paddr: u32,
-    /// This member gives the number of bytes in the file image of the segment; it may be zero.
     pub filesz: u32,
-    /// This member gives the number of bytes in the memory image of the segment; it may be zero.
     pub memsz: u32,
     pub flags: Flags,
-    /// Loadable process segments must have congruent values for p_vaddr and p_offset, modulo the page
-    /// size. This member gives the value to which the segments are aligned in memory and in the
-    /// file. Values 0 and 1 mean no alignment is required. Otherwise, p_align should be a
-    /// positive, integral power of 2, and p_vaddr should equal p_offset, modulo p_align.
     pub align: u32,
 }
 
@@ -461,70 +518,18 @@ impl Pheader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub enum Type {
-    /// The array element is unused; other members’ values are undefined. This type lets the
-    /// program header table have ignored entries.
     NULL = 0,
-    /// The array element specifies a loadable segment, described by p_filesz and p_memsz. The
-    /// bytes from the file are mapped to the beginning of the memory segment. If the segment’s
-    /// memory size (p_memsz) is larger than the file size (p_filesz), the “extra” bytes are
-    /// defined to hold the value 0 and to follow the segment’s initialized area. The file size may
-    /// not be larger than the memory size. Loadable segment entries in the program header table
-    /// appear in ascending order, sorted on the p_vaddr member.
     LOAD = 1,
-    /// The array element specifies dynamic linking information. See Section 8.3, Dynamic Section,
-    /// for more information.
     DYNAMIC = 2,
-    /// The array element specifies the location and size of a null-terminated path name to invoke
-    /// as an interpreter. This segment type is meaningful only for executable files (though it may
-    /// occur for shared objects); it may not occur more than once in a file. If it is present, it
-    /// must precede any loadable segment entry. See Section 8.1, Program Interpreter, for more
-    /// information.
     INTERP = 3,
-    /// The array element specifies the location and size of auxiliary information. See Section
-    /// 7.6, Note Sections, for more information.
     NOTE = 4,
-    /// This segment type is reserved but has unspecified semantics. Programs that contain an array
-    /// element of this type do not conform to the ABI.
     SHLIB = 5,
-    /// The array element, if present, specifies the location and size of the program header table
-    /// itself, both in the file and in the memory image of the program. This segment type may not
-    /// occur more than once in a file. Moreover, it may occur only if the program header table is
-    /// part of the memory image of the program. If it is present, it must precede any loadable
-    /// segment entry.
     PHDR = 6,
-    /// The array element specifies the Thread-Local Storage template. Implementations need not
-    /// support this program table entry. See Section 7.7, Thread-Local Storage, for more
-    /// information.
     TLS = 7,
-    /// Values in this inclusive range are reserved for operating system-specific semantics.
     LOOS = 0x60000000,
     HIOS = 0x6fffffff,
-    /// Values in this inclusive range are reserved for processor-specific semantics. If meanings
-    /// are specified, the psABI supplement explains them.
     LOPROC = 0x70000000,
     HIPROC = 0x7fffffff,
-}
-
-impl TryFrom<&[u8]> for Type {
-    type Error = &'static str;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        if value.len() != 4 {
-            return Err("Elf32_Phdr.p_type requires exactly 4 bytes");
-        }
-
-        Ok(match le32!(value) {
-            0 => Self::NULL,
-            1 => Self::LOAD,
-            2 => Self::DYNAMIC,
-            3 => Self::INTERP,
-            4 => Self::NOTE,
-            5 => Self::SHLIB,
-            6 => Self::PHDR,
-            7 => Self::TLS,
-            _ => return Err("Bad Elf32_Phdr.p_type value"),
-        })
-    }
 }
 ```
 
@@ -534,7 +539,6 @@ permission flags the segment should have once it is dumped into memory:
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-/// See 7.4. Segment Permission https://gabi.xinuos.com/elf/07-pheader.html#segment-permissions
 pub struct Flags(u32);
 
 impl Flags {
@@ -542,34 +546,10 @@ impl Flags {
     pub const X: Self = Flags(0x1);
     pub const W: Self = Flags(0x2);
     pub const R: Self = Flags(0x4);
-
-    pub fn bits(self) -> u32 {
-        self.0
-    }
-}
-
-impl TryFrom<&[u8]> for Flags {
-    type Error = &'static str;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        if value.len() != 4 {
-            return Err("Not enough bytes for Elf32_Phdr.p_flags, need 4");
-        }
-
-        Ok(Self(le32!(value)))
-    }
-}
-
-impl std::ops::BitOr for Flags {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Flags(self.0 | rhs.0)
-    }
 }
 ```
 
-## Full ELF parsing 
+## Full ELF parsing
 
 Putting `Elf32_Ehdr` and `Elf32_Phdr` parsing together:
 
@@ -604,7 +584,7 @@ impl TryFrom<&[u8]> for Elf {
 The equivalent to `readelf -l`:
 
 ```text
-Elf { 
+Elf {
     header: Header {
         ident: Identifier {
             magic: [127, 69, 76, 70],
@@ -613,7 +593,7 @@ Elf {
             version: 1,
             os_abi: 0,
             abi_version: 0,
-            _pad: [0, 0, 0, 0, 0, 0, 0] 
+            _pad: [0, 0, 0, 0, 0, 0, 0]
         },
         type: Executable,
         machine: EM_ARM,
@@ -627,10 +607,10 @@ Elf {
         phnum: 1,
         shentsize: 40,
         shnum: 8,
-        shstrndx: 7 
+        shstrndx: 7
     },
     pheaders: [
-        Pheader { 
+        Pheader {
             type: LOAD,
             offset: 4096,
             vaddr: 32768,
@@ -679,9 +659,9 @@ virtual address `0x8000`. The linux kernel won't let us, and rightfully so,
 `man mmap` says:
 
 > If addr is not NULL, then the kernel takes it as a hint about where to place
-> the mapping;  on Linux,  the kernel will pick a nearby page boundary (but
+> the mapping; on Linux, the kernel will pick a nearby page boundary (but
 > always above or equal to the value specified by /proc/sys/vm/mmap_min_addr) and
-> attempt  to  create  the  mapping there.
+> attempt to create the mapping there.
 
 And `/proc/sys/vm/mmap_min_addr` on my system is `u16::MAX` (2^16)-1=65535. So
 mapping our segment to `0x8000` (32768) is not allowed:
@@ -730,8 +710,27 @@ let segment = sys::mmap::mmap(
 
 But this means the segment of the process to emulate is not at `0x8000`, but
 anywhere the kernel allows. So we need to add a translation layer between guest
-and host memory. If you're familiar with how virtual memory works, its similar
-but one more indirection.
+and host memory: (If you're familiar with how virtual memory works, its similar
+but one more indirection)
+
+```text
++--guest--+
+| 0x80000 | ------------+
++---------+             |
+                        |
+                    Mem::translate
+                        |
++------host------+      |
+| 0x7f5b4b8f8000 | <----+
++----------------+
+```
+
+Putting this into rust:
+
+- `map_region` registers a region of memory and allows `Mem`
+  to take ownership for calling munmap on these segments
+  once it goes out of scope
+- `translate` does what the diagram above shows
 
 ```rust
 struct MappedSegment {
@@ -744,12 +743,6 @@ pub struct Mem {
 }
 
 impl Mem {
-    pub fn new() -> Self {
-        Self {
-            maps: BTreeMap::new(),
-        }
-    }
-
     pub fn map_region(&mut self, guest_addr: u32, len: u32, host_ptr: *mut u8) {
         self.maps
             .insert(guest_addr, MappedSegment { host_ptr, len });
@@ -759,8 +752,8 @@ impl Mem {
     pub fn translate(&self, guest_addr: u32) -> Option<*mut u8> {
         // Find the greatest key <= guest_addr.
         let (&base, seg) = self.maps.range(..=guest_addr).next_back()?;
-        if guest_addr < base + seg.len {
-            let offset = guest_addr - base;
+        if guest_addr < base.wrapping_add(seg.len) {
+            let offset = guest_addr.wrapping_sub(base);
             Some(unsafe { seg.host_ptr.add(offset as usize) })
         } else {
             None
@@ -771,27 +764,6 @@ impl Mem {
         let ptr = self.translate(guest_addr)?;
         unsafe { Some(u32::from_le(*(ptr as *const u32))) }
     }
-
-    pub fn write_u32(&mut self, guest_addr: u32, value: u32) -> Result<(), &'static str> {
-        let ptr = self.translate(guest_addr).ok_or_else(|| "hola")?;
-        unsafe { *(ptr as *mut u32) = value.to_le() }
-        Ok(())
-    }
-
-    /// dropping all segments, consumes self to make it single use and not allow any self usages
-    /// after dropping
-    pub fn destroy(self) {
-        for (guest_addr, seg) in self.maps {
-            if let Some(nnptr) = std::ptr::NonNull::new(seg.host_ptr) {
-                if let Err(e) = sys::mmap::munmap(nnptr, seg.len as usize) {
-                    eprintln!(
-                        "Warning: failed to munmap guest segment @ {:#010x} (len={}): {:?}",
-                        guest_addr, seg.len, e
-                    );
-                }
-            }
-        }
-    }
 }
 ```
 
@@ -801,7 +773,179 @@ interaction.
 
 ## Mapping segments with their permissions
 
+The basic idea is similar to the way a JIT compiler works:
+
+1. create a `mmap` section with `W` permissions
+2. write bytes from elf into section
+3. zero rest of defined size
+4. change permission of section with `mprotect` to the
+   permissions defined in the `Pheader`
+
+```rust
+/// mapping applys the configuration of self to the current memory context by creating the
+/// segments with the corresponding permission bits, vaddr, etc
+pub fn map(&self, raw: &[u8], guest_mem: &mut mem::Mem) -> Result<(), String> {
+    // zero memory needed case, no clue if this actually ever happens, but we support it
+    if self.memsz == 0 {
+        return Ok(());
+    }
+
+    if self.vaddr == 0 {
+        return Err("program header has a zero virtual address".into());
+    }
+
+    // we need page alignement, so either Elf32_Phdr.p_align or 4096
+    let (start, _end, len) = self.alignments();
+
+    // Instead of mapping at the guest vaddr (Linux doesnt't allow for low addresses),
+    // we allocate memory wherever the host kernel gives us.
+    // This keeps guest memory sandboxed: guest addr != host addr.
+    let segment = mem::mmap::mmap(
+        None,
+        len as usize,
+        MmapProt::WRITE,
+        MmapFlags::ANONYMOUS | MmapFlags::PRIVATE,
+        -1,
+        0,
+    )?;
+
+    let segment_ptr = segment.as_ptr();
+    let segment_slice = unsafe { std::slice::from_raw_parts_mut(segment_ptr, len as usize) };
+
+    let file_slice: &[u8] =
+        &raw[self.offset as usize..(self.offset.wrapping_add(self.filesz)) as usize];
+
+    // compute offset inside the mmaped slice where the segment should start
+    let offset = (self.vaddr - start) as usize;
+
+    // copy the segment contents to the mmaped segment
+    segment_slice[offset..offset + file_slice.len()].copy_from_slice(file_slice);
+
+    // we need to zero the remaining bytes
+    if self.memsz > self.filesz {
+        segment_slice
+            [offset.wrapping_add(file_slice.len())..offset.wrapping_add(self.memsz as usize)]
+            .fill(0);
+    }
+
+    // record mapping in guest memory table, so CPU can translate guest vaddr to host pointer
+    guest_mem.map_region(self.vaddr, len, segment_ptr);
+
+    // we change the permissions for our segment from W to the segments requested bits
+    mem::mmap::mprotect(segment, len as usize, self.flags.into())
+}
+
+/// returns (start, end, len)
+fn alignments(&self) -> (u32, u32, u32) {
+    // we need page alignement, so either Elf32_Phdr.p_align or 4096
+    let align = match self.align {
+        0 => 0x1000,
+        _ => self.align,
+    };
+    let start = self.vaddr & !(align - 1);
+    let end = (self.vaddr.wrapping_add(self.memsz).wrapping_add(align) - 1) & !(align - 1);
+    let len = end - start;
+    (start, end, len)
+}
+```
+
+Map is called in the emulators entry point:
+
+```rust
+let elf: elf::Elf = (&buf as &[u8]).try_into().expect("Failed to parse binary");
+let mut mem = mem::Mem::new();
+for phdr in elf.pheaders {
+    if phdr.r#type == elf::pheader::Type::LOAD {
+        phdr.map(&buf, &mut mem)
+            .expect("Mapping program header failed");
+    }
+}
+```
+
 # Decoding armv7
+
+Decoding armv7 instructions seems doable at a glance, but
+its a deeper rabbit-hole than i expected, prepare for a bit
+shifting, implicit behaviour and intertwined meaning heavy
+section:
+
+Instructions are grouped into four top level sections:
+
+1. Branch and control
+2. Data processing
+3. Load and store
+4. Other (syscalls & stuff)
+
+Each armv7 instruction is 32 bit in size, (in general) its
+layout is as follows:
+
+```text
++--------+------+------+------+------------+---------+
+|  cond  |  op  |  Rn  |  Rd  |  Operand2  |  shamt  |
+|   4b   |  4b  |  4b  |  4b  |     12b    |   4b    |
++--------+------+------+------+------------+---------+
+```
+
+| bit range | name     | description                         |
+| --------- | -------- | ----------------------------------- |
+| 0..4      | cond     | contains `EQ`, `NE`, etc            |
+| 4..8      | op       | for instance `0b1101` for `mov`     |
+| 8..12     | rn       | source register                     |
+| 12..16    | rd       | destination register                |
+| 16..28    | operand2 | immediate value or shifted register |
+| 28..32    | shamt    | shift amount                        |
+
+## Rust representation
+
+Since `cond` decides wheter or not the instruction is
+executed, I decided on the following struct to be the decoded
+instruction:
+
+```rust
+#[derive(Debug, Copy, Clone)]
+pub struct InstructionContainer {
+    pub cond: u8,
+    pub instruction: Instruction,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Instruction {
+    MovImm { rd: u8, rhs: u32 },
+    Svc,
+    LdrLiteral { rd: u8, addr: u32 },
+    Unknown(u32),
+}
+```
+
+These 4 instructions are enough to support both the minimal
+binary at the intro and the asm hello world:
+
+```armasm
+    .global _start
+_start:
+    mov r0, #161
+    mov r7, #1
+    svc #0
+```
+
+```armasm
+    .section .rodata
+msg:
+    .asciz "Hello, world!\n"
+
+    .section .text
+    .global _start
+_start:
+    ldr r0, =1
+    ldr r1, =msg
+    mov r2, #14
+    mov r7, #4
+    svc #0
+
+    mov r0, #0
+    mov r7, #1
+    svc #0
+```
 
 ## Immediate instructions
 
@@ -812,5 +956,7 @@ interaction.
 ## Instruction dispatch
 
 ## Forwarding Syscalls
+
+### write
 
 ### The exception: `exit`
