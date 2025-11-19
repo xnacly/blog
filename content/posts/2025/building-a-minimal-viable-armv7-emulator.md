@@ -2,7 +2,6 @@
 title: "Building a Minimal Viable Armv7 Emulator from Scratch"
 date: 2025-11-19
 summary: "Emulating armv7 is surprisingly easy, even from scratch AND in Rust"
-draft: true
 tags:
   - arm
   - rust
