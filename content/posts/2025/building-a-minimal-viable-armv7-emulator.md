@@ -1394,11 +1394,11 @@ says:
 > instruction will be generated.
 
 Now this may not make sense at a first glance, why would `=msg` be assembled
-into an address to the address of the literal. But an `armv7` can not encode a
-full address, it is impossible due to the instruction being restricted to an
-8-bit value rotated right by an even number of bits. The ldr instructions
-argument points to a literal pool entry. The LDR instruction reads a 32-bit
-value at the literal pool entry and this value is the actual address of msg.
+into an address to the address of the literal. But an `armv7` instruction can
+not encode a full address, it is impossible due to the instruction being
+restricted to an 8-bit value rotated right by an even number of bits. The ldr
+instructions argument points to a literal pool entry, this entry is a 32-bit
+value and reading it produces the actual address of `msg`.
 
 When decoding we can see ldr points to a memory address (32800 or `0x8020`) in
 the section we mmaped earlier:
@@ -1732,6 +1732,15 @@ pub fn syscall_forward(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
         // ...
     }
 }
+```
+
+Executing `helloWorld.elf` now results in:
+
+```shell
+$ stinkarm -Cforward example/helloWorld.elf
+Hello, world!
+$ echo $status
+0
 ```
 
 ### Deny and Sandbox - restricting syscalls
