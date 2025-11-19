@@ -1,5 +1,5 @@
 ---
-title: "Building a Minimal Viable Armv7 Emulator"
+title: "Building a Minimal Viable Armv7 Emulator from Scratch"
 date: 2025-11-06
 summary: "Emulating armv7 is surprisingly easy, even from scratch AND in Rust"
 draft: true
@@ -38,7 +38,13 @@ To execute this arm assembly on my x86 system, I need to:
 
 Sounds easy? It is!
 
-# Minimalist arm setup and smallest possible arm binary
+_Open below if you want to see me write a build script and a nix flake:_
+{{<rawhtml>}}
+<details>
+    <summary>
+        <h3>Minimalist arm setup and smallest possible arm binary</h3>
+    </summary>
+{{</rawhtml>}}
 
 Before I start parsing ELF I'll need a binary to emulate, so lets create a
 build script called `bld_exmpl` (so I can write a lot less) and nix flake, so
@@ -151,6 +157,11 @@ path = "tools/bld_exmpl.rs"
   );
 }
 ```
+
+{{<rawhtml>}}
+</details>
+{{</rawhtml>}}
+
 
 # Parsing ELF
 
@@ -1333,16 +1344,110 @@ impl<'cpu> Cpu<'cpu> {
 }
 ```
 
-## "Double"-indirection of ldr
+## LDR and addresses in literal pools
 
-<!-- TODO: -->
+While [Translating guest memory access to host memory
+access](#translating-guest-memory-access-to-host-memory-access) goes into depth
+on translating / forwarding guest memory access to host memory adresses, this
+chapter will focus on the layout of literals in armv7 and how `ldr` indirects
+memory access.
+
+Lets first take a look at the ldr instruction of our hello world example:
+
+```armasm
+    .section .rodata
+    @ define a string with the `msg` label
+msg:
+    @ asciz is like asciii but zero terminated
+    .asciz "Hello world!\n"
+
+    .section .text
+    .global _start
+_start:
+    @ load the literal pool addr of msg into r1
+    ldr r1, =msg
+```
+
+The `as`
+[documentation](https://sourceware.org/binutils/docs/as.html#index-LDR-reg_002c_003d_003clabel_003e-pseudo-op_002c-ARM)
+says:
+
+> `LDR`
+>
+> ```armasm
+> ldr <register>, = <expression>
+> ```
+>
+> If expression evaluates to a numeric constant then a MOV or MVN instruction
+> will be used in place of the LDR instruction, if the constant can be generated
+> by either of these instructions. Otherwise the constant will be placed into the
+> nearest literal pool (if it not already there) and a PC relative LDR
+> instruction will be generated. 
+
+Now this may not make sense at a first glance, why would `=msg` be assembled
+into an address to the address of the literal. But an `armv7` can not encode a
+full address, its just impossible by bit size. The ldr instructions argument
+points to a literal pool entry, The LDR instruction reads a 32-bit value at the
+literal pool entry and this value is the actual address of msg.
+
+When decoding we can see ldr points to a memory address (32800 or `0x8020`) in
+the section we mmaped earlier:
+
+```text
+[src/cpu/mod.rs:121:15] instruction = LdrLiteral { rd: 1, addr: 32800 }
+```
+
+Before accessing guest memory, we must translate said addr to a host addr:
+
+```text
++--ldr.addr--+
+|   0x8020   |
++------------+             
+      |                    
+      |             +-------------Mem::read_u32(addr)-------------+
+      |             |                                             |
+      |             |   +--guest--+                               |
+      |             |   |  0x8020 | ------------+                 |
+      |             |   +---------+             |                 |
+      |             |                           |                 |
+      +-----------> |                       Mem::translate        |
+                    |                           |                 |
+                    |   +------host------+      |                 |
+                    |   | 0x7ffff7f87020 | <----+                 |
+                    |   +----------------+                        |
+                    |                                             |
+                    +---------------------------------------------+
+                                           |
++--literal-ptr--+                          |
+|     0x8024    | <------------------------+
++---------------+          
+```
+
+Or in code:
+
+```rust
+impl<'cpu> Cpu<'cpu> {
+    pub fn step(&mut self) -> Result<bool, err::Err> {
+        // ...
+        match instruction {
+            decoder::Instruction::LdrLiteral { rd, addr } => {
+                self.r[rd as usize] = self.mem.read_u32(addr).expect("Segfault");
+            }
+        }
+        // ...
+    }
+}
+```
+
+Any other instruction using a addr will have to also go through the
+`Mem::translate` indirection.
 
 ## Forwarding Syscalls and other feature flag based logic
 
-Since stinkarm has three ways of dealing with syscalls (`deny`,
-`sandbox`, `forward`) I decided on handling the selection of the
-appropriate logic at cpu creation time via a function pointer attached
-to the CPU as the `syscall_handler` field:
+Since stinkarm has three ways of dealing with syscalls (`deny`, `sandbox`,
+`forward`). I decided on handling the selection of the appropriate logic at cpu
+creation time via a function pointer attached to the CPU as the
+`syscall_handler` field:
 
 ```rust{hl_lines=8}
 type SyscallHandlerFn = fn(&mut Cpu, ArmSyscall) -> i32;
