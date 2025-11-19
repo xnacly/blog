@@ -1,6 +1,6 @@
 ---
 title: "Building a Minimal Viable Armv7 Emulator from Scratch"
-date: 2025-11-06
+date: 2025-11-19
 summary: "Emulating armv7 is surprisingly easy, even from scratch AND in Rust"
 draft: true
 tags:
@@ -40,6 +40,7 @@ Sounds easy? It is!
 
 _Open below if you want to see me write a build script and a nix flake:_
 {{<rawhtml>}}
+
 <details>
     <summary>
         <h3>Minimalist arm setup and smallest possible arm binary</h3>
@@ -159,9 +160,9 @@ path = "tools/bld_exmpl.rs"
 ```
 
 {{<rawhtml>}}
+
 </details>
 {{</rawhtml>}}
-
 
 # Parsing ELF
 
@@ -665,15 +666,15 @@ Program Headers:
 # Dumping ELF segments into memory
 
 Since the only reason for parsing the elf headers is to know where to put what
-segment with which permissons, I want to quickly interject on why we have to
-put said segments at these specific adresses. The main reason is that all
-pointers, all offsets and pc related decodings have to be done relative to
-`Elf32_Ehdr.entry` and the linker generated all instruction arguments according
-to this value.
+segment with which permissions, I want to quickly interject on why we have to
+put said segments at these specific addresses. The main reason is that all
+pointers, all offsets and pc related decoding has to be done relative to
+`Elf32_Ehdr.entry`. The linker also generated all instruction arguments
+according to this value.
 
 Before mapping each segment at its `Pheader::vaddr`, we have to understand:
 One doesn't simply `mmap` with `MAP_FIXED` or `MAP_NOREPLACE` into the virtual
-address `0x8000`. The linux kernel won't let us, and rightfully so, `man mmap`
+address `0x8000`. The Linux kernel won't let us, and rightfully so, `man mmap`
 says:
 
 > If addr is not NULL, then the kernel takes it as a hint about where to place
@@ -1382,13 +1383,13 @@ says:
 > will be used in place of the LDR instruction, if the constant can be generated
 > by either of these instructions. Otherwise the constant will be placed into the
 > nearest literal pool (if it not already there) and a PC relative LDR
-> instruction will be generated. 
+> instruction will be generated.
 
 Now this may not make sense at a first glance, why would `=msg` be assembled
 into an address to the address of the literal. But an `armv7` can not encode a
-full address, its just impossible by bit size. The ldr instructions argument
-points to a literal pool entry, The LDR instruction reads a 32-bit value at the
-literal pool entry and this value is the actual address of msg.
+full address, it is impossible, just by pure bit size. The ldr instructions
+argument points to a literal pool entry. The LDR instruction reads a 32-bit
+value at the literal pool entry and this value is the actual address of msg.
 
 When decoding we can see ldr points to a memory address (32800 or `0x8020`) in
 the section we mmaped earlier:
@@ -1402,8 +1403,8 @@ Before accessing guest memory, we must translate said addr to a host addr:
 ```text
 +--ldr.addr--+
 |   0x8020   |
-+------------+             
-      |                    
++------------+
+      |
       |             +-------------Mem::read_u32(addr)-------------+
       |             |                                             |
       |             |   +--guest--+                               |
@@ -1420,7 +1421,7 @@ Before accessing guest memory, we must translate said addr to a host addr:
                                            |
 +--literal-ptr--+                          |
 |     0x8024    | <------------------------+
-+---------------+          
++---------------+
 ```
 
 Or in code:
@@ -1449,7 +1450,7 @@ Since stinkarm has three ways of dealing with syscalls (`deny`, `sandbox`,
 creation time via a function pointer attached to the CPU as the
 `syscall_handler` field:
 
-```rust{hl_lines=8}
+```rust {hl_lines=8}
 type SyscallHandlerFn = fn(&mut Cpu, ArmSyscall) -> i32;
 
 pub struct Cpu<'cpu> {
@@ -1463,34 +1464,90 @@ pub struct Cpu<'cpu> {
 
 impl<'cpu> Cpu<'cpu> {
     pub fn new(conf: &'cpu config::Config, mem: &'cpu mut mem::Mem, pc: u32) -> Self {
-        let syscall_handler: SyscallHandlerFn = if conf.log.contains(&Log::Syscalls) {
-            match conf.syscalls {
-                SyscallMode::Forward => |cpu, syscall| {
-                    println!("{}", syscall.print(cpu));
-                    print_i32_or_errno(translation::syscall_forward(cpu, syscall))
-                },
-                SyscallMode::Sandbox => |cpu, syscall| {
-                    println!("{} [sandbox]", syscall.print(cpu));
-                    print_i32_or_errno(sandbox::syscall_sandbox(cpu, syscall))
-                },
-                SyscallMode::Deny => |cpu, syscall| {
-                    println!("{} [deny]", syscall.print(cpu));
-                    print_i32_or_errno(sandbox::syscall_stub(cpu, syscall))
-                },
-            }
-        } else {
-            match conf.syscalls {
-                SyscallMode::Forward => translation::syscall_forward,
-                SyscallMode::Sandbox => sandbox::syscall_sandbox,
-                SyscallMode::Deny => sandbox::syscall_stub,
-            }
+        // ... 
+
+        // simplified, in stinkarm this gets wrapped if the user specifies
+        // syscall traces via -lsyscalls or -v
+        s.syscall_handler = match conf.syscalls {
+            SyscallMode::Forward => translation::syscall_forward,
+            SyscallMode::Sandbox => sandbox::syscall_sandbox,
+            SyscallMode::Deny => sandbox::syscall_stub,
         };
         // ...
     }
 }
 ```
 
-Now the handling of a syscall is simply to execute this handler:
+### Calling conventions, armv7 vs x86
+
+In our examples I obviously used the armv7 syscall calling convention. But this
+convention differs from the calling convention of our x86 technically its
+(x86-64 System V AMD64 ABI) host by a lot.
+
+While armv7 uses `r7` for the syscall number and `r0-r5` for the syscall
+arguments, x86 uses `rax` for the syscall id and `rdi`, `rsi`, `rdx`, `r10`,
+`r8` and `r9` for the syscall arguments (`rcx` can't be used since `syscall`
+clobbers it, thus Linux goes with `r10`).
+
+Also the syscall numbers differ between armv7 and x86, `sys_write` is `1` on
+x86 and `4` on armv7. If you are interested in either calling conventions,
+syscall ids and documentation, do visit [The Chromium Projects- Linux System
+Call
+Table](https://www.chromium.org/chromium-os/developer-library/reference/linux-constants/syscalls/),
+its generated from Linux headers and fairly readable.
+
+Table version:
+
+| usage      | armv7 | x86-64 |
+| ---------- | ----- | ------ |
+| syscall id | r7    | rax    |
+| return     | r0    | rax    |
+| arg0       | r0    | rdi    |
+| arg1       | r1    | rsi    |
+| arg2       | r2    | rdx    |
+| arg3       | r3    | r10    |
+| arg4       | r4    | r8     |
+| arg5       | r5    | r9     |
+
+So something like writing `TEXT123` to stdout looks like this on arm:
+
+```armasm
+    .section .rodata
+txt:
+    .asciz "TEXT123\n"
+
+    .section .text
+    .global _start
+_start:
+    ldr r0, =1
+    ldr r1, =txt
+    mov r2, #8
+    mov r7, #4
+    svc #0
+```
+
+While it looks like the following on x86:
+
+```asm
+    .section .rodata
+txt:
+    .string "TEXT123\n"
+
+    .section .text
+    .global _start
+_start:
+    movq $1, %rax
+    movq $1, %rdi
+    leaq txt(%rip), %rsi
+    movq $8, %rdx
+    syscall
+```
+
+### Hooking the syscall handler up
+
+After made the calling convention differences clear, the handling of a syscall
+is simply to execute this handler and use `r7` to convert the armv7 syscall
+number to the x86 syscall number:
 
 ```rust
 impl<'cpu> Cpu<'cpu> {
@@ -1510,7 +1567,7 @@ impl<'cpu> Cpu<'cpu> {
 ```
 
 Of course for this to work the syscall has to be implemented and even
-decodable. For this there is the `ArmSyscall` enum:
+decodable. At least for the decoding, there is the `ArmSyscall` enum:
 
 ```rust
 #[derive(Debug)]
@@ -1543,20 +1600,251 @@ impl TryFrom<u32> for ArmSyscall {
 }
 ```
 
-By default the sandboxing mode is selected, but I will go into detail on
-both sandboxing and denying syscalls later, first I want to focus on
-implementing the translation layer from armv7 to x86 syscalls.
+By default the sandboxing mode is selected, but I will go into detail on both
+sandboxing and denying syscalls later, first I want to focus on the
+implementation of the translation layer from armv7 to x86 syscalls:
 
-### Implementing: write
+```rust
+pub fn syscall_forward(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
+    match syscall {
+        // none are implemented, dump debug print
+        c @ _ => todo!("{:?}", c),
+    }
+}
+```
 
-<!-- TODO: -->
+### Handling the only exception: `exit`
 
-### Handling the exception: `exit`
+Since exit means the guest wants to exit, we can't just forward this to the
+host system, simply because this would exit the emulator before it would be
+able to do cleanup and unmap memory regions allocated.
 
-<!-- TODO: -->
+```rust
+pub fn syscall_forward(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
+    match syscall {
+        ArmSyscall::exit => {
+            cpu.status = Some(cpu.r[0] as i32);
+            0
+        }
+        // ...
+    }
+}
+```
+
+To both know we hit the exit syscall (we need to, otherwise the emulator
+executes further) and propagate the exit code to the host system, we set the
+`Cpu::status` field to `Some(r0)`, which is the argument to the syscall.
+
+This field is then used in the emulator entry point / main loop:
+
+```rust
+fn main() {
+    let mut cpu = cpu::Cpu::new(&conf, &mut mem, elf.header.entry);
+
+    loop {
+        match cpu.step() { /**/ }
+
+        // Cpu::status is only some if sys_exit was called, we exit the
+        // emulation loop
+        if cpu.status.is_some() {
+            break;
+        }
+    }
+
+    let status = cpu.status.unwrap_or_else(|| 0);
+    // cleaning up used memory via munmap
+    mem.destroy();
+    // propagating the status code to the host system
+    exit(status);
+}
+```
+
+### Implementing: `sys_write`
+
+The write syscall is not as spectacular as `sys_exit`: writing a `buf` of `len`
+to a file descriptor.
+
+| register | description                                               |
+| -------- | --------------------------------------------------------- |
+| rax      | syscall number (1 for write)                              |
+| rdi      | file descriptor (0 for stdin, 1 for stdout, 2 for stderr) |
+| rsi      | a pointer to the buffer                                   |
+| rdx      | the length of the buffer `rsi` is pointing to             |
+
+It is necessary for doing the O of I/O tho, otherwise there won't be any
+`Hello, World!`s on the screen.
+
+```rust
+use crate::{cpu, sys};
+
+pub fn write(cpu: &mut cpu::Cpu, fd: u32, buf: u32, len: u32) -> i32 {
+    // fast path for zero length buffer
+    if len == 0 {
+        return 0;
+    }
+
+    // Option::None returned from translate indicates invalid memory access
+    let Some(buf_ptr) = cpu.mem.translate(buf) else {
+        // so we return 'Bad Address'
+        return -(sys::Errno::EFAULT as i32);
+    };
+
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            // syscall number
+            in("rax") 1_u64,
+            in("rdi") fd as u64,
+            in("rsi") buf_ptr as u64,
+            in("rdx") len as u64,
+            lateout("rax") ret,
+            // we clobber rcx
+            out("rcx") _,
+            // and r11
+            out("r11") _,
+            // we don't modify the stack
+            options(nostack),
+        );
+    }
+
+    ret as i32
+}
+```
+
+Adding it to `translation::syscall_forward` with its arguments according to the
+calling convention we established before:
+
+```rust
+pub fn syscall_forward(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
+    match syscall {
+        // ...
+        ArmSyscall::write => sys::write(cpu, cpu.r[0], cpu.r[1], cpu.r[2]),
+        // ...
+    }
+}
+```
 
 ### Deny and Sandbox - restricting syscalls
 
 The simplest sandboxing mode is to deny, the more complex is to allow
 some syscall interactions while others are denied. The latter requires
 checking arguments to syscalls, not just the syscall kind.
+
+Lets start with the easier syscall handler: `deny`. Deny simply returns
+`ENOSYS` to all invoked syscalls:
+
+```rust
+pub fn syscall_deny(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
+    match syscall {
+        ArmSyscall::exit => cpu.status = Some(cpu.r[0] as i32),
+        _ => (),
+    }
+    return -(sys::Errno::ENOSYS as i32);
+}
+```
+
+Thus executing the hello world and enabling syscall logs results in neither
+`sys_write` nor `sys_exit` going through and `ENOSYS` being returned for both
+in `r0`:
+
+```text
+$ stinkarm -Cdeny -lsyscalls examples/helloWorld.elf
+148738 write(fd=1, buf=0x8024, len=14) [deny]
+=ENOSYS
+148738 exit(code=0) [deny]
+=ENOSYS
+```
+
+`sandbox` at a high level is the same as deny, check for conditions before
+executing a syscall, if they don't match, disallow the syscall:
+
+```rust
+pub fn syscall_sandbox(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
+    match syscall {
+        ArmSyscall::exit => {
+            cpu.status = Some(cpu.r[0] as i32);
+            0
+        }
+        ArmSyscall::write => {
+            let (r0, r1, r2) = (cpu.r[0], cpu.r[1], cpu.r[2]);
+            // only allow writing to stdout, stderr and stdin
+            if r0 > 2 {
+                return -(sys::Errno::ENOSYS as i32);
+            }
+
+            sys::write(cpu, r0, r1, r2)
+        }
+        c @ _ => todo!("{:?}", c),
+    }
+}
+```
+
+For instance we only allow writing to stdin, stdout and stderr, no other file
+descriptors. Once could also add pointer range checks, buffer length checks and
+other hardening measures here. Emulating the hello world example with this mode
+(which is the default mode):
+
+```text
+$ stinkarm -Csandbox -lsyscalls examples/helloWorld.elf
+150147 write(fd=1, buf=0x8024, len=14) [sandbox]
+Hello, world!
+=14
+150147 exit(code=0) [sandbox]
+=0
+```
+
+# Fin
+
+So there you have it, emulating armv7 is fairly easy:
+
+- ELF parsing is just byte to integer + validation
+- instruction decoding is a bit more messy, but at its core its documented and
+  made somewhat easier by rust providing `rotate_right` methods
+- syscalls and calling conventions differ between architectures and instruction
+  sets, but again, these are documented heavily
+
+In 1284 loc I wrote a zero dependency, from scratch[^1] and correct[^2] armv7
+emulator thats able to emulate a whole hello world.
+
+And I'd say its even pretty fast.
+
+```text
+$ stinkarm -v examples/helloWorld.elf
+[     0.070ms] opening binary "examples/helloWorld.elf"
+[     0.097ms] parsing ELF...
+[     0.101ms] \
+ELF Header:
+  Magic:              [7f, 45, 4c, 46]
+  Class:              ELF32
+  Data:               Little endian
+  Type:               Executable
+  Machine:            EM_ARM
+  Version:            1
+  Entry point:        0x8000
+  Program hdr offset: 52 (32 bytes each)
+  Section hdr offset: 4696
+  Flags:              0x05000200
+  EH size:            52
+  # Program headers:  1
+  # Section headers:  9
+  Str tbl index:      8
+
+Program Headers:
+  Type       Offset   VirtAddr   PhysAddr   FileSz    MemSz  Flags  Align
+  LOAD     0x001000 0x00008000 0x00008000 0x000033 0x000033    R|X 0x1000
+
+[     0.126ms] mapped program header `LOAD` of 51B (G=0x8000 -> H=0x7ffff7f87000)
+[     0.129ms] jumping to entry G=0x8000 at H=0x7ffff7f87000
+[     0.131ms] starting the emulator
+153719 write(fd=1, buf=0x8024, len=14) [sandbox]
+Hello, world!
+=14
+153719 exit(code=0) [sandbox]
+=0
+[     0.149ms] exiting with `0`
+```
+
+[^1]: except clap, I dont want to parse cli flags for the 20th time this year
+
+[^2]: afaik, write me an email `contact at xnacly.me` if you found a bug please
