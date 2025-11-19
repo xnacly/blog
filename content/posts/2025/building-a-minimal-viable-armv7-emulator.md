@@ -8,6 +8,15 @@ tags:
   - rust
 ---
 
+{{<callout type="Tip or TLDR - I built a tiny, zero dependency armv7 userspace emulator in Rust">}}
+I wrote a minimal viable armv7 emulator in 1.3k lines of Rust without any
+dependencies. It parses and validates a 32-bit arm binary, maps its segments,
+decodes a subset of arm instructions, translates guest and host memory
+interactions and forwards arm Linux syscalls into x86-64 System V syscalls.
+
+It can run a armv7 hello world binary and does so in 0.150ms (with parsing).
+{{</callout>}}
+
 After reading about the process the Linux kernel performs to execute binaries,
 I thought: I want to write an armv7 emulator - [`stinkarm`](https://github.com/xnacly/stinkarm). Mostly to understand the ELF
 format, the encoding of arm 32bit instructions, the execution of arm assembly
@@ -441,7 +450,7 @@ impl TryFrom<&[u8]> for Header {
 ```
 
 The attentive reader will see me using `le16!` and `le32!` for parsing bytes
-into unsigned integers of different classes:
+into unsigned integers of different classes (`le` is short for little endian):
 
 ```rust
 #[macro_export]
@@ -475,7 +484,7 @@ macro_rules! le32 {
 ```
 
 For me, the most important fields in `Header` are `phoff` and `phentsize`,
-since we can use these to index into the binary to locate the program headers.
+since we can use these to index into the binary to locate the program headers (`Phdr`).
 
 ```rust
 /// Phdr, equivalent to Elf32_Phdr, see: https://gabi.xinuos.com/elf/07-pheader.html
@@ -834,7 +843,7 @@ pub fn map(&self, raw: &[u8], guest_mem: &mut mem::Mem) -> Result<(), String> {
     let file_slice: &[u8] =
         &raw[self.offset as usize..(self.offset.wrapping_add(self.filesz)) as usize];
 
-    // compute offset inside the mmaped slice where the segment should start
+    // compute offset inside the mmapped slice where the segment should start
     let offset = (self.vaddr - start) as usize;
 
     // copy the segment contents to the mmaped segment
@@ -903,7 +912,7 @@ Disassembly of section .text:
 So we use `Mem::read_u32(0x8000)` and get `0xe3a000a1`.
 
 Decoding armv7 instructions seems doable at a glance, but
-its a deeper rabbit-hole than i expected, prepare for a bit
+it is a deeper rabbit-hole than i expected, prepare for a bit
 shifting, implicit behaviour and intertwined meaning heavy
 section:
 
@@ -914,8 +923,8 @@ Instructions are more or less grouped into four groups:
 3. Load and store
 4. Other (syscalls & stuff)
 
-Each armv7 instruction is 32 bit in size, (in general) its
-layout is as follows:
+Each armv7 instruction is 32 bit in size, (in general) its layout is as
+follows:
 
 ```text
 +--------+------+------+------+------------+---------+
@@ -1082,7 +1091,7 @@ bits:
 #[inline(always)]
 fn decode_rotated_imm(imm12: u32) -> u32 {
     let rotate = ((imm12 >> 8) & 0b1111) * 2;
-    ((imm12 & 0xff) as u32).rotate_right(rotate)
+    (imm12 & 0xff).rotate_right(rotate)
 }
 ```
 
@@ -1328,7 +1337,7 @@ impl<'cpu> Cpu<'cpu> {
             decoder::Instruction::Unknown(w) => {
                 return Err(err::Err::UnknownOrUnsupportedInstruction(w));
             }
-            i @ _ => {
+            i => {
                 stinkln!(
                     "found unimplemented instruction, exiting: {:#x}:={:?}",
                     word,
@@ -1387,7 +1396,8 @@ says:
 
 Now this may not make sense at a first glance, why would `=msg` be assembled
 into an address to the address of the literal. But an `armv7` can not encode a
-full address, it is impossible, just by pure bit size. The ldr instructions
+full address, it is impossible due to the instruction being restricted to an
+8-bit value rotated right by an even number of bits. The ldr instructions
 argument points to a literal pool entry. The LDR instruction reads a 32-bit
 value at the literal pool entry and this value is the actual address of msg.
 
@@ -1481,8 +1491,8 @@ impl<'cpu> Cpu<'cpu> {
 ### Calling conventions, armv7 vs x86
 
 In our examples I obviously used the armv7 syscall calling convention. But this
-convention differs from the calling convention of our x86 technically its
-(x86-64 System V AMD64 ABI) host by a lot.
+convention differs from the calling convention of our x86 (technically its
+x86-64 System V AMD64 ABI) host by a lot.
 
 While armv7 uses `r7` for the syscall number and `r0-r5` for the syscall
 arguments, x86 uses `rax` for the syscall id and `rdi`, `rsi`, `rdx`, `r10`,
@@ -1494,7 +1504,7 @@ x86 and `4` on armv7. If you are interested in either calling conventions,
 syscall ids and documentation, do visit [The Chromium Projects- Linux System
 Call
 Table](https://www.chromium.org/chromium-os/developer-library/reference/linux-constants/syscalls/),
-its generated from Linux headers and fairly readable.
+it is generated from Linux headers and fairly readable.
 
 Table version:
 
@@ -1608,7 +1618,7 @@ implementation of the translation layer from armv7 to x86 syscalls:
 pub fn syscall_forward(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
     match syscall {
         // none are implemented, dump debug print
-        c @ _ => todo!("{:?}", c),
+        c => todo!("{:?}", c),
     }
 }
 ```
@@ -1651,7 +1661,7 @@ fn main() {
         }
     }
 
-    let status = cpu.status.unwrap_or_else(|| 0);
+    let status = cpu.status.unwrap_or(0);
     // cleaning up used memory via munmap
     mem.destroy();
     // propagating the status code to the host system
@@ -1708,11 +1718,11 @@ pub fn write(cpu: &mut cpu::Cpu, fd: u32, buf: u32, len: u32) -> i32 {
         );
     }
 
-    ret as i32
+    ret.try_into().unwrap_or(i32::MAX)
 }
 ```
 
-Adding it to `translation::syscall_forward` with its arguments according to the
+Adding it to `translation::syscall_forward` with it's arguments according to the
 calling convention we established before:
 
 ```rust
@@ -1736,11 +1746,11 @@ Lets start with the easier syscall handler: `deny`. Deny simply returns
 
 ```rust
 pub fn syscall_deny(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
-    match syscall {
-        ArmSyscall::exit => cpu.status = Some(cpu.r[0] as i32),
-        _ => (),
-    }
-    return -(sys::Errno::ENOSYS as i32);
+    if let ArmSyscall::exit = syscall {
+        cpu.status = Some(cpu.r[0] as i32)
+    };
+
+    -(sys::Errno::ENOSYS as i32)
 }
 ```
 
@@ -1775,13 +1785,13 @@ pub fn syscall_sandbox(cpu: &mut super::Cpu, syscall: ArmSyscall) -> i32 {
 
             sys::write(cpu, r0, r1, r2)
         }
-        c @ _ => todo!("{:?}", c),
+        _ => todo!("{:?}", syscall),
     }
 }
 ```
 
 For instance we only allow writing to stdin, stdout and stderr, no other file
-descriptors. Once could also add pointer range checks, buffer length checks and
+descriptors. One could also add pointer range checks, buffer length checks and
 other hardening measures here. Emulating the hello world example with this mode
 (which is the default mode):
 
@@ -1796,18 +1806,23 @@ Hello, world!
 
 # Fin
 
-So there you have it, emulating armv7 is fairly easy:
+So there you have it, emulating armv7 in six steps:
 
-- ELF parsing is just byte to integer + validation
-- instruction decoding is a bit more messy, but at its core its documented and
-  made somewhat easier by rust providing `rotate_right` methods
-- syscalls and calling conventions differ between architectures and instruction
-  sets, but again, these are documented heavily
+1. parsing and validating a 32-bit armv7 Elf binary
+2. mapping segments into host address space
+3. decoding a non-trivial subset of armv7 instructions
+4. handling program counter relative literal loads
+5. translating memory interactions from guest to host
+6. forwarding armv7 Linux syscalls into their x86-64 System V counterparts
 
-In 1284 loc I wrote a zero dependency, from scratch[^1] and correct[^2] armv7
-emulator thats able to emulate a whole hello world.
+Diving into the Elf and armv7 spec without any previous relevant experience,
+except the asm module I had in uni, was a bit overwhelming at first. Armv7
+decoding was by far the most annoying part of the project and I still don't
+like the bizarre argument ordering for x86-64 syscalls.
 
-And I'd say its even pretty fast.
+The whole project is about 1284 lines of Rust, has zero dependencies[^1] and is
+as far as I know working correctly[^2]. It executes a real armv7 hello world
+binary in ~0.015ms, with parsing and setup taking ~0.130ms:
 
 ```text
 $ stinkarm -v examples/helloWorld.elf
