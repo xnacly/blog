@@ -13,7 +13,9 @@ dependencies. It parses and validates a 32-bit arm binary, maps its segments,
 decodes a subset of arm instructions, translates guest and host memory
 interactions and forwards arm Linux syscalls into x86-64 System V syscalls.
 
-It can run a armv7 hello world binary and does so in 0.150ms (with parsing).
+It can run a armv7 hello world binary and does so in 1.9ms (0.015ms for raw
+emulation without setup), while qemu takes 12.3ms (stinkarm is thus ~100-1000x
+slower than native armv7 execution).
 {{</callout>}}
 
 After reading about the process the Linux kernel performs to execute binaries,
@@ -677,8 +679,8 @@ Since the only reason for parsing the elf headers is to know where to put what
 segment with which permissions, I want to quickly interject on why we have to
 put said segments at these specific addresses. The main reason is that all
 pointers, all offsets and pc related decoding has to be done relative to
-`Elf32_Ehdr.entry`. The linker also generated all instruction arguments
-according to this value.
+`Elf32_Ehdr.entry`, here `0x8000`. The linker also generated all instruction
+arguments according to this value.
 
 Before mapping each segment at its `Pheader::vaddr`, we have to understand:
 One doesn't simply `mmap` with `MAP_FIXED` or `MAP_NOREPLACE` into the virtual
@@ -757,7 +759,7 @@ Putting this into rust:
 - `map_region` registers a region of memory and allows `Mem`
   to take ownership for calling munmap on these segments
   once it goes out of scope
-- `translate` does what the diagram above shows
+- `translate` takes a guest addr and translates it to a host addr
 
 ```rust
 struct MappedSegment {
@@ -911,7 +913,7 @@ Disassembly of section .text:
 So we use `Mem::read_u32(0x8000)` and get `0xe3a000a1`.
 
 Decoding armv7 instructions seems doable at a glance, but
-it is a deeper rabbit-hole than i expected, prepare for a bit
+it is a deeper rabbit-hole than I expected, prepare for a bit
 shifting, implicit behaviour and intertwined meaning heavy
 section:
 
@@ -1829,8 +1831,13 @@ decoding was by far the most annoying part of the project and I still don't
 like the bizarre argument ordering for x86-64 syscalls.
 
 The whole project is about 1284 lines of Rust, has zero dependencies[^1] and is
-as far as I know working correctly[^2]. It executes a real armv7 hello world
-binary in ~0.015ms, with parsing and setup taking ~0.130ms:
+as far as I know working correctly[^2]. 
+
+# Microbenchmark Performance
+
+It executes a real armv7 hello world binary in ~0.015ms of guest execution-only
+time, excluding process startup and parsing. The e2e execution with all stages
+I outlined before, it takes about 2ms.
 
 ```text
 $ stinkarm -v examples/helloWorld.elf
@@ -1866,6 +1873,23 @@ Hello, world!
 153719 exit(code=0) [sandbox]
 =0
 [     0.149ms] exiting with `0`
+```
+
+Comparing the whole pipeline (parsing elf, segment mapping, cpu setup, etc) to
+`qemu` we arrive at the following micro benchmark results. To be fair, qemu
+does a whole lot more than stinkarm, it has a jit, a full linux-user runtime, a
+dynamic loader, etc.
+
+```text
+$ hyperfine "./target/release/stinkarm examples/helloWorld.elf" -N --warmup 10
+Benchmark 1: ./target/release/stinkarm examples/helloWorld.elf
+  Time (mean ± σ):       1.9 ms ±   0.3 ms    [User: 0.2 ms, System: 1.4 ms]
+  Range (min … max):     1.6 ms …   3.4 ms    1641 runs
+
+$ hyperfine "qemu-arm ./examples/helloWorld.elf" -N --warmup 10
+Benchmark 1: qemu-arm ./examples/helloWorld.elf
+  Time (mean ± σ):      12.3 ms ±   1.5 ms    [User: 3.8 ms, System: 8.0 ms]
+  Range (min … max):     8.8 ms …  19.8 ms    226 runs
 ```
 
 [^1]: except clap, I dont want to parse cli flags for the 20th time this year
