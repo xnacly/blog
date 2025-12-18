@@ -1,59 +1,54 @@
 {
     "projects": [
         {
-            "title": "libjson",
-            "description": "Fast and minimal JSON parser library written in and for go",
-            "url": "https://github.com/xNaCly/libjson"
-        },
-        {
             "title": "sqleibniz",
             "description": "A static analysis tool for sql, check syntax errors as well as semantic errors on snippets or full schemata",
             "url": "https://github.com/xNaCly/sqleibniz"
         },
         {
-            "title": "Sophia",
-            "description": "Lisp like, embeddable and extendable scripting language supporting go interoperability",
-            "url": "https://github.com/xNaCly/Sophia"
+            "title": "purple-garden",
+            "description": "Lean scripting language, designed and implemented with a focus on performance and a low memory profile",
+            "url": "https://github.com/xNaCly/purple-garden"
         },
         {
-            "title": "roguelike",
-            "description": "A roguelike, implemented in c without any dependencies",
-            "url": "https://github.com/xNaCly/roguelike"
+            "title": "libjson",
+            "description": "Fast and minimal JSON parser library written in and for go",
+            "url": "https://github.com/xNaCly/libjson"
         },
         {
-            "title": "codedraw",
-            "description": "Draw with commands, export and share your creations",
-            "url": "https://github.com/xNaCly/codedraw"
+            "title": "go-iso8601-duration",
+            "description": "A small library for parsing iso8601 compliant duration format into Go time compatible representation",
+            "url": "https://github.com/xNaCly/go-iso8601-duration"
         },
         {
-            "title": "fleck",
-            "description": "A minimal, configurable and highly optimized markdown2html compiler, supports macros, watch mode, syntax highlighting, latex math and live preview",
-            "url": "https://github.com/xNaCly/fleck"
+            "title": "stinkarm",
+            "description": "ARMv7 userspace binary emulator for x86 linux systems",
+            "url": "https://github.com/xNaCly/stinkarm"
         },
         {
-            "title": "tcmpr",
-            "description": "Combination of huffman coding and run-length lossless compression",
-            "url": "https://github.com/xNaCly/tcmpr"
+            "title": "tango8",
+            "description": "8-bit accumulator-based CPU and tooling designed for educational and hobbyist hardware projects without going insane",
+            "url": "https://github.com/xNaCly/stinkarm"
         },
         {
-            "title": "statlib",
-            "description": "go library for commonly used statistical computations, optimized for performance, zero allocations",
-            "url": "https://github.com/xNaCly/statlib"
+            "title": "go-fast-date",
+            "description": "Go port of A Very Fast 64–Bit Date Algorithm, based on benjoffe.com/fast-date-64",
+            "url": "https://github.com/xNaCly/go-fast-date"
         },
         {
-            "title": "mehr",
-            "description": "Operating system-independent package and configuration manager",
-            "url": "https://github.com/xNaCly/mehr"
+            "title": "segmented-rs",
+            "description": "A segmented list and bump allocator ripped out and ported from purple garden",
+            "url": "https://github.com/xNaCly/segmented-rs"
         },
         {
-            "title": "panzer",
-            "description": "panzer 🐢 - a minimal, fast and fun to use shell written in go",
-            "url": "https://github.com/xNaCly/panzer"
+            "title": "go-hafas",
+            "description": "A Hafas Go implementation providing qol helpers and abstractions for easier hafas interaction",
+            "url": "https://github.com/xNaCly/go-hafas"
         },
         {
-            "title": "gleichzeitig",
-            "description": "Run shell scripts, commands and executables in parallel",
-            "url": "https://github.com/xNaCly/gleichzeitig"
+            "title": "regexcc",
+            "description": " Compile regular expressions to optimised C, rust and go",
+            "url": "https://github.com/xNaCly/regexcc"
         }
     ]
 }
