@@ -224,12 +224,6 @@ func main() {
 }
 ```
 
-I know this JIT compiler is very rudimentary and uses the go tool chain,
-however I plan on adding a bytecode compiler and a bytecode vm to the
-[sophia](https://github.com/xnacly/sophia) programming language. This vm will
-include meta tracing capabilities and a JIT compiler for turning hot paths into
-go source code and compiling it on the fly.
-
 ## What to do with this JIT
 
 My plan is to compare the three different approaches to evaluation techniques
