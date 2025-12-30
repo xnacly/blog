@@ -20,6 +20,7 @@
 
 * {
   box-sizing: border-box;
+  word-break: all;
 }
 
 /* jetbrains-mono-regular - latin */
@@ -97,8 +98,8 @@ nav:not(#TableOfContents) {
       cursor: pointer;
 
       a {
-        margin-right: calc(var(--spacing)/2);
-        margin-left: calc(var(--spacing)/2);
+        margin-right: calc(var(--spacing) / 2);
+        margin-left: calc(var(--spacing) / 2);
       }
     }
   }
@@ -395,8 +396,12 @@ a {
   cursor: pointer;
   text-decoration: none;
 }
-a:before { content: '[' }
-a:after{ content: ']' }
+a:before {
+  content: "[";
+}
+a:after {
+  content: "]";
+}
 a:hover {
   background-color: var(--primary-dark);
   color: var(--primary);
