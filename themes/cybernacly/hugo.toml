@@ -2,17 +2,17 @@ languageCode = 'en-US'
 title = 'xnacly - blog'
 
 [[menus.main]]
-name = '/'
+name = '~'
 pageRef = '/'
 weight = 10
 
 [[menus.main]]
-name = '/archive'
+name = '~/archive.html'
 pageRef = '/posts'
 weight = 20
 
 [[menus.main]]
-name = '/about'
+name = '~/about.html'
 pageRef = '/about'
 weight = 30
 

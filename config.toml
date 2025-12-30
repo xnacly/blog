@@ -9,7 +9,7 @@ pagination.pagerSize = 4
 [markup]
 
     [markup.highlight]
-    style = 'xcode-dark'
+    style = 'average'
     lineNos = true
     lineNumbersInTable = false
 

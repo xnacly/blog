@@ -4,7 +4,7 @@
     <div class="bio">
         <img class="avatar" alt="avatar" src="{{ "/images/avatar.webp" | relURL }}" />
         <div class="content">
-            <h1>{{ .Site.Title }}</h1>
+            <h5>{{ .Site.Params.bio | markdownify }}</h5>
             <div class="social">
             {{ if .Site.Params.Social }} 
                 {{ range $name, $href := .Site.Params.Social }}
@@ -12,7 +12,6 @@
                 {{ end }}
             {{ end }}
             </div>
-            <h5>{{ .Site.Params.bio | markdownify }}</h5>
         </div>
     </div>
 </div>

@@ -19,14 +19,10 @@
     {{ if or ($paginator.HasPrev) ($paginator.HasNext) }}
         <div class="pagination">
             {{ if $paginator.HasPrev }}
-                <a href="{{.Paginator.Prev.URL}}">
-                    Newer {{ with .Site.Params.newerPosts }}{{ . }}{{ end }}
-                </a>
+                <a href="{{.Paginator.Prev.URL}}">Newer.txt{{ with .Site.Params.newerPosts }}{{ . }}{{ end }}</a>
             {{ end }}
             {{ if $paginator.HasNext }}
-                <a class="older" href="{{.Paginator.Next.URL}}">{{ with .Site.Params.olderPosts }}{{ . }}{{ end }}
-                    Older
-                </a>
+                <a class="older" href="{{.Paginator.Next.URL}}">{{ with .Site.Params.olderPosts }}{{ . }}{{ end }}Older.txt</a>
             {{ end }}
         </div>
     {{ end }}

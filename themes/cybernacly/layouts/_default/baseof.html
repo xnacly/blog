@@ -8,42 +8,4 @@
     <main>{{ block "main" . }}{{ end }}</main>
     <footer>{{ partial "footer.html" . }}</footer>
   </body>
-  <script>
-    let snowflakeInterval = null;
-    const snowflakes = [];
-
-    function spawnSnowflake() {
-      const snowflake = document.createElement("span");
-      snowflake.className = "emoji";
-      snowflake.textContent = "❄️";
-      snowflake.style.left = Math.random() * window.innerWidth + "px";
-      snowflake.style.fontSize = 8 + Math.random() * 16 + "px";
-      snowflake.style.opacity = 0.5 + Math.random() * 0.5;
-      snowflake.style.animationDuration = 5 + Math.random() * 10 + "s";
-      document.body.appendChild(snowflake);
-      snowflakes.push(snowflake);
-      const duration = parseFloat(snowflake.style.animationDuration) * 1000;
-      setTimeout(() => {
-        snowflake.remove();
-        const index = snowflakes.indexOf(snowflake);
-        if (index !== -1) snowflakes.splice(index, 1);
-      }, duration);
-    }
-
-    function startSnowflake() {
-      if (!snowflakeInterval) snowflakeInterval = setInterval(spawnSnowflake, 100);
-    }
-
-    function stopSnowflake() {
-      clearInterval(snowflakeInterval);
-      snowflakeInterval = null;
-    }
-
-    window.addEventListener("scroll", () => {
-      if (window.scrollY === 0) startSnowflake();
-      else stopSnowflake();
-    });
-
-    if (window.scrollY === 0) startSnowflake();
-  </script>
 </html>
