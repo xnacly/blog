@@ -127,6 +127,7 @@ nav:not(#TableOfContents) {
       align-items: center;
 
       h5 {
+        text-align: center;
         color: var(--text-secondary);
       }
     }
