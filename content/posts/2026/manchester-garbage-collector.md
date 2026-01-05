@@ -124,12 +124,77 @@ z()
 
 # Comparing mgc to other gc idioms and other reasonings
 
+# Stress
+
 # (non-)Portability to Rust
 
-<!-- TODO: -->
+I'm currently in the process of rewriting purple garden in Rust for a plethora
+of reasons (these are not that easy to understand if one hasn't worked on a
+language runtime before):
 
-- mention why a rust port is currently in the work, see notebook
-- mention why its not really portable, since std::collections requires inner
-  containers to not be moved 
+- less abstractions, since I had to handroll hashing, hashmaps, arrays,
+  arraylists, which I can just replace with `std::collection`
+- better and shorter bytecode compiler, since rust just allows me to `Vec<Op>`
+  with better append and inserts than in my impls
+- better bytecode format and less wasted bytes for each instruction, since this
+  allows me to have things like a single byte for `RET` and multiple bytes for
+  things like `ADD rA, rB` via: 
 
-# Stress
+    ```rust
+    enum Op<'vm> {
+        Add {
+            dst: u8,
+            lhs: u8,
+            rhs: u8,
+        },
+        // [...]
+        Ret {
+            /// used for peephole optimisation, merging multiple RET into a single
+            /// RET with a count
+            times: u8,
+        },
+    }
+    ```
+
+- way better error handling in each component of the runtime, since the current
+  C interpreter just aborts via assertions
+- easier compile time value interning via rust hashmaps (I had three hashmaps
+  for three different types), now I just use `std::collections::HashMap`
+- the `ARGS` instruction for encoding both register offset and count for
+  arguments to builtin and user defined function calls is no longer necessary,
+  since both `SYS` and `CALL` encode their offset and arg count in their
+  instruction: 
+
+    ```rust
+    enum Op<'vm> {
+        // [...]
+        Call {
+            func: u16,
+            args_start: u8,
+            args_len: u8,
+        },
+        Sys {
+            ptr: BuiltinFn<'vm>,
+            args_start: u8,
+            args_len: u8,
+        },
+    }
+    ```
+
+- Builtin functions for `SYS` no longer require type erasure, casting,
+  indirection in the compiler, since I wasnt able to store a 64bit ptr in a
+  word, so the compiler created an array of pointers to builtins and the
+  bytecode encoded an index into said array the vm could use to call the
+  correct builtin, this is now just a fn ptr, see above and below:
+
+    ```rust
+    type BuiltinFn<'vm> = fn(&mut Vm<'vm>, &[Value]);
+    ```
+
+The single downside is now:
+
+The garbage collector can no longer be compacting and moving, since
+`std::collections` adts aren't movable and also own their memory, so I'd have
+to implement these on my own, which I don't want to right now, maybe in the
+future. So the garbage collector will just be a heap walking, marking and
+calling `drop` for cleanup of dead values.
