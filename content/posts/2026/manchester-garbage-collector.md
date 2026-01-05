@@ -77,7 +77,42 @@ pressuring benchmarks see [Stress](#Stress).
 # Garbage collection stages
 
 The mgc is divided in three stages, each requiring the runtime to stop for the
-duration of the collection. All stages together form a collection cycle.
+duration of the collection. All stages together form a collection cycle, see
+below:
+
+```text
++-------------+
+|  Roots Set  |
+| (VM regs,   |
+| globals...) |
++------+------+
+       |
+       v
++-------------+
+|  Mark Phase |
+| Mark all    |
+| live objects|
++------+------+
+       |
+       v              Copy
++-------------------+ live     +-------------------+
+|   Old Bump Space  | objects  |   New Bump Space  |
+|  (old allocator)  | -------> |  (new allocator)  |
++-------------------+          +-------------------+
+       |
+       v
++--------------+
+| Reset Old    |
+| Bump Alloc   |
+| (len=0,pos=0)|
++------+-------+
+       |
+       v
++-------------+
+| Swap Alloc  |
+| old <-> new |
++-------------+
+```
 
 
 ## Mark
@@ -88,9 +123,11 @@ marking them as reachable. This set is called a root set. In purple-garden
 (pg), this root set consists of the current registers and the variable table
 holding local variable bindings. Since variables in higher scopes are
 considered alive, even while they aren't in scope, the garbage collector has to
-take parent scopes into account. For instance in the following example, if the
-gc runs after `z()`: `a` and `b` are alive, while `c` isn't anymore and can be
-cleaned up safely:
+take parent scopes into account. This is implemented by walking the root set
+recursively, setting the mark bit on all reachable objects.
+
+For instance in the following example, if the gc runs after `z()`: `a` and `b`
+are alive, while `c` isn't anymore and can be cleaned up safely:
 
 ```nix
 # alive
@@ -106,25 +143,196 @@ z()
 
 ## Copy
 
+Once the alive subset `A` of currently allocated set `M` is determined, said
+values in `A` can be safely copied from the previously used memory region
+(from-space) to the new space (to-space). Both spaces are backed by bump
+allocator which are implemented as a segmented list of memory regions allocated
+through `mmap`.
+
+After copying the from-space is reset, but not deallocated. Then from-space and
+to-space are swapped, so from-space is now the to-space, and vise versa.
+
 ## Rewriting references
 
-# Keeping track of values
+Since the copy and move to new memory locations invalidates previously held
+references, rewriting said references to point to the newly copied memory
+regions is necessary.
 
-# Differentiating heap and non-heap values
+For this, the previously established root set needs to be walked again and all
+references updated.
 
-# Zero cost abstractions and small Values
+# Reference implementation
 
-# Dynamicly growable bump allocation
+Putting the above concepts into reality and C, is the content of the next
+chapters.
 
-# String abstraction
 
-# Triggering garbage collection
+```c
+typedef struct {
+  // from-space
+  Allocator *old;
+  // to-space
+  Allocator *new;
+  void *vm;
+  GcHeader *head;
+  size_t allocated;
+  size_t allocated_since_last_cycle;
+} Gc;
 
-# Tuning
+Gc gc_init(size_t gc_size) {
+  size_t half = gc_size / 2;
+  return (Gc){
+      .old = bump_init(half, 0),
+      .new = bump_init(half, 0),
+      .head = NULL,
+  };
+}
+```
+
+Allocator is a simple struct abstracting allocation away, for instance for a
+bump allocator:
+
+```c
+typedef struct {
+  // Allocator::ctx refers to an internal allocator state and owned memory
+  // areas, for instance, a bump allocator would attach its meta data (current
+  // position, cap, etc) here
+  void *ctx;
+  Stats (*stats)(void *ctx);
+  void *(*request)(void *ctx, size_t size);
+  void (*reset)(void *ctx);
+  void (*destroy)(void *ctx);
+} Allocator;
+```
+
+## Keeping track of values
+
+For the garbage collector to know which regions it handed out, these regions
+are allocated with a metadata header. Said header consists of:
+
+```c
+typedef struct GcHeader {
+  unsigned int marked : 1;
+  unsigned int type : 3;
+  uintptr_t forward;
+  uint16_t size;
+  struct GcHeader *next;
+} GcHeader;
+```
+
+The type bits identify the payload as one of:
+
+```c
+typedef enum {
+  // just bytes
+  GC_OBJ_RAW = 0b000,
+  // a string with a reference to an inner string, can be allocated or not
+  GC_OBJ_STR = 0b001,
+  // list has zero or more children
+  GC_OBJ_LIST = 0b010,
+  // map holds allocated buckets with owned children
+  GC_OBJ_MAP = 0b011,
+} ObjType;
+```
+
+So an allocation looks like the following:
+
+```text
+       allocation 
+      (raw pointer)
+            |
+            |
+            v
+ +----------------------+
+ | GcHeader             | <-- header
+ +----------------------+
+ |                      |
+ | payload (size B)     | <-- data handed out as ptr to the user
+ |                      |
+ +----------------------+
+```
+
+Each GcHeader is 32B, thus each heap allocation has this overhead.
+
+
+```c
+void *gc_request(Gc *gc, size_t size, ObjType t) {
+  void *allocation = gc->old->request(gc->old->ctx, size + sizeof(GcHeader));
+  void *payload = (char *)allocation + sizeof(GcHeader);
+  GcHeader *h = (GcHeader *)allocation;
+  h->type = t;
+  h->marked = 0;
+  h->size = size;
+  h->next = gc->head;
+  gc->head = h;
+  gc->allocated_since_last_cycle += size;
+  gc->allocated += size;
+  return (void *)payload;
+}
+```
+
+## Differentiating heap and non-heap values
+
+For purple garden, neither booleans, doubles or integers require heap
+allocation. Strings which are known at compile time are simply windows into the
+initial input the interpreter gets. Thus some marker for distinguishing between
+heap values and non heap values is necessary via `Value.is_heap`:
+
+```c
+typedef enum {
+  V_NONE,
+  V_STR,
+  V_DOUBLE,
+  V_INT,
+  V_TRUE,
+  V_FALSE,
+  V_ARRAY,
+  V_OBJ,
+} ValueType;
+
+typedef struct List {
+  size_t cap;
+  size_t len;
+  Value *arr;
+} List;
+
+typedef struct MapEntry {
+  uint32_t hash;
+  Value value;
+} MapEntry;
+
+typedef struct Map {
+  size_t cap;
+  size_t len;
+  MapEntry *buckets;
+} Map;
+
+typedef struct Value {
+  unsigned int is_heap : 1;
+  unsigned int type : 3;
+  union {
+    Str string;
+    List *array;
+    Map *obj;
+    double floating;
+    int64_t integer;
+  };
+} Value;
+```
+
+## Zero cost abstractions and small Values
+
+## Dynamicly growable bump allocation
+
+## String abstraction
+
+## Triggering garbage collection
+
+## Tuning
 
 # Comparing mgc to other gc idioms and other reasonings
 
-# Stress
+# Stress / Benchmark
 
 # (non-)Portability to Rust
 
