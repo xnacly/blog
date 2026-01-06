@@ -15,8 +15,8 @@ is designed in the way it is.
 
 # Init
 
-While garbage collection in gneral is a widely researched subject, the
-combindation of multiple garbage collection approaches can yieal improved
+While garbage collection in general is a widely researched subject, the
+combination of multiple garbage collection approaches can yield improved
 results compared to the single components. The manchester garbage collector
 (mgc) is such a composite of several paradigms: allocation into preallocated
 memory regions, reachability analysis via recursive root set tracing and
@@ -72,8 +72,7 @@ std::runtime::gc::cycle()
 Since `f` does not allocate enough memory to trigger the garbage collector, see
 [Triggering Garbage Collection](#triggering-garbage-collection), we manually
 trigger a collection via `std::runtime::gc::cycle()`. Also, purple garden uses
-a separate allocator for call frames to reduce gc pressure. For more extensive
-pressuring benchmarks see [Stress](#Stress).
+a separate allocator for call frames to reduce gc pressure.
 
 # Garbage collection stages
 
@@ -258,7 +257,7 @@ So an allocation looks like the following:
  +----------------------+
 ```
 
-Each GcHeader is 32B, thus each heap allocation has an added overhead of 32B. 
+Each `GcHeader` is 32B, thus each heap allocation has an added overhead of 32B. 
 
 ```c
 void *gc_request(Gc *gc, size_t size, ObjType t) {
@@ -302,7 +301,7 @@ typedef enum {
 
 A union for storing the data for each type (excluding true and false, since
 these do not require further data). `Str` for the custom string abstraction,
-List for the dynamically growing array, Map for the hashmap, a double and an
+List for the dynamically growing array, Map for the hash map, a double and an
 `int64_t`.
 
 ```c
@@ -339,7 +338,7 @@ typedef struct Value {
 Using a bit tag on `Value` itself results in the valid states of all types
 except `V_NONE` combined with `is_some` equal to true and false. While the type
 `V_NONE` can only be combined with `is_some` being false. This invariant is
-checked in the runtime and there is a specific function for determining wheter an
+checked in the runtime and there is a specific function for determining whether an
 instance of `Value` is optionally available:
 
 ```c
@@ -426,7 +425,7 @@ typedef struct Value {
 } Value;
 ```
 
-## Dynamicly growable bump allocation
+## Dynamically growable bump allocation
 
 {{<callout type="Info - Growable bump allocators">}}
 For an in depth commentary on bump allocation, growable chunks, mmap and
@@ -438,7 +437,7 @@ Implementation](/posts/2025/porting-a-segmented-list-from-c-to-rust/#c-implement
 
 Since allocations are expensive due to them requiring a system interaction via
 syscalls, purple garden is designed to reduce syscalls as much as possible. To
-archive this, a growing bump allocator is used. Opun getting a request the bump
+archive this, a growing bump allocator is used. Upon getting a request the bump
 allocator cant satisfy, the allocator itself requests a new chunk of memory
 from the operating system. This chunk is double the size of the previous one,
 while the first chunk is as large as the page size of the system it is running
@@ -461,7 +460,7 @@ typedef struct __Str {
 } Str;
 ```
 
-`Str.length` is computed at creation time. A static string thats know when
+`Str.length` is computed at creation time. A static string that's know when
 compiling the runtime (things like error messages or string representations of
 value type names), is passed to the `STRING` macro:
 
@@ -526,7 +525,7 @@ inline uint64_t Str_hash(const Str *str) {
 }
 ```
 
-There is a small internal api built on top of this abstraction:
+There is a small internal API built on top of this abstraction:
 
 ```c
 char Str_get(const Str *str, size_t index);
@@ -551,11 +550,136 @@ std::str::lines("hello\nworld") # [hello world]
 
 ## Triggering garbage collection
 
+Since allocation latency is more important for short live scripts, triggering
+and checking for the memory usage to surpass the garbage collection threshold
+on allocation or worse, on each bytecode instruction can slow the virtual
+machine down substantially and thus introduce latency in both execution and
+allocation speeds.
+
+To circumvent this, the threshold check is only performed after leaving a
+scope, this has the benefit of omitting all objects one would have to
+consider as alive in the scope before the vm left said scope.
+
+```c
+    case OP_RET: {
+      Frame *old = vm->frame;
+      if (vm->frame->prev) {
+        vm->pc = vm->frame->return_to_bytecode;
+        vm->frame = vm->frame->prev;
+      }
+
+      // [...] free lists for stack frames and stuff
+
+      if (!vm->config.disable_gc &&
+          vm->gc->allocated >= (vm->config.gc_size * vm->config.gc_limit)) {
+        gc_cycle(vm->gc);
+      }
+      break;
+    }
+```
+
+The `runtime` standard library exposes a `gc` package for both
+`std::runtime::gc::stats` and triggering a garbage collection cycle manually:
+`std::runtime::gc::cycle()`, as shown in the initial example at the start of
+this article. The implementation and usage for the latter is shown below.
+
+```c static void pg_builtin_runtime_gc_cycle(Vm *vm) {
+  if (!vm->config.disable_gc) {
+    gc_cycle(vm->gc);
+  }
+}
+```
+
+```nix
+var combination = std::str::append("Hello" " " "World")
+std::println(combination)
+std::runtime::gc::cycle()
+```
+
 ## Tuning
 
-# Comparing mgc to other gc idioms and other reasonings
+As the virtual machine is configurable via the `VmConfig` structure, so is the
+garbage collector:
 
-# Stress / Benchmark
+```c
+typedef struct {
+  // defines the maximum amount of memory purple garden is allowed to allocate,
+  // if this is hit, the vm exits with a non zero code
+  uint64_t max_memory;
+  // define gc heap size in bytes
+  uint64_t gc_size;
+  // gc threshold in percent 5-99%
+  double gc_limit;
+  // disables the garbage collector
+  bool disable_gc;
+
+  // [...]
+} Vm_Config;
+```
+
+This configuration is passed to `Vm_new` and attached to the `Vm` structure.
+For non embedding purposes, specifically for simply running the interpreter,
+each option, its short name, its default value, its type and its description
+is defined in the list of cli flags the purple garden binary accepts:
+
+```c
+#define CLI_ARGS                                                               \
+  X(gc_max, 0, GC_MIN_HEAP * 64l, LONG,                                        \
+    "set hard max gc space in bytes, default is GC_MIN_HEAP*64")               \
+  X(gc_size, 0, GC_MIN_HEAP * 2l, LONG, "define gc heap size in bytes")        \
+  X(gc_limit, 0, 70.0, DOUBLE,                                                 \
+    "instruct memory usage amount for gc to start collecting, in percent "     \
+    "(5-99%)")                                                                 \
+  X(no_gc, 0, false, BOOL, "disable garbage collection")                       
+```
+
+Producing a nice help text via a modified `6cl` library (omitted all other
+options for clarity):
+
+```text
+usage ./build/purple_garden_debug: [ +gc_max <1638400>] [ +gc_size <51200>]
+                                   [ +gc_limit <70>] [ +no_gc]
+                                   // [...]
+                                   <file.garden>
+
+Option:
+          +gc_max <1638400>
+                set hard max gc space in bytes, default is GC_MIN_HEAP*64
+          +gc_size <51200>
+                define gc heap size in bytes
+          +gc_limit <70>
+                instruct memory usage amount for gc to start collecting, in
+                percent (5-99%)
+          +no_gc
+                disable garbage collection
+          // [...]
+
+          +h/+help
+                help page and usage
+Examples:
+        ./build/purple_garden_debug +gc_max 1638400 +gc_size 51200 \
+                                    +gc_limit 0 +no_gc
+```
+
+If the user sets these, the main purple garden entry point uses these cli
+options to set the `VmConfig`:
+
+```c
+Vm vm = Vm_new(
+  (Vm_Config){
+      .gc_size = a.gc_size,
+      .gc_limit = a.gc_limit,
+      .disable_gc = a.no_gc,
+      .max_memory = a.gc_max,
+      .disable_std = a.no_std,
+      .no_env = a.no_env,
+  }, pipeline_allocator, &gc);
+```
+
+<!-- TODO: finish this -->
+
+
+# Comparing mgc to other gc idioms and other reasoning
 
 # (non-)Portability to Rust
 
@@ -563,10 +687,10 @@ I'm currently in the process of rewriting purple garden in Rust for a plethora
 of reasons (these are not that easy to understand if one hasn't worked on a
 language runtime before):
 
-- less abstractions, since I had to handroll hashing, hashmaps, arrays,
-  arraylists, which I can just replace with `std::collection`
+- less abstractions, since I had to hand roll hashing, hash maps, arrays,
+  array lists, which I can just replace with `std::collection`
 - better and shorter bytecode compiler, since rust just allows me to `Vec<Op>`
-  with better append and inserts than in my impls
+  with better append and inserts than in my implementations
 - better bytecode format and less wasted bytes for each instruction, since this
   allows me to have things like a single byte for `RET` and multiple bytes for
   things like `ADD rA, rB` via: 
@@ -589,11 +713,11 @@ language runtime before):
 
 - way better error handling in each component of the runtime, since the current
   C interpreter just aborts via assertions
-- easier compile time value interning via rust hashmaps (I had three hashmaps
+- easier compile time value interning via rust hash maps (I had three hash maps
   for three different types), now I just use `std::collections::HashMap`
 - the `ARGS` instruction for encoding both register offset and count for
   arguments to builtin and user defined function calls is no longer necessary,
-  since both `SYS` and `CALL` encode their offset and arg count in their
+  since both `SYS` and `CALL` encode their offset and argument count in their
   instruction: 
 
     ```rust
@@ -613,10 +737,11 @@ language runtime before):
     ```
 
 - Builtin functions for `SYS` no longer require type erasure, casting,
-  indirection in the compiler, since I wasnt able to store a 64bit ptr in a
-  word, so the compiler created an array of pointers to builtins and the
+  indirection in the compiler, since I wasn't able to store a 64bit pointer in
+  a word, so the compiler created an array of pointers to a builtin and the
   bytecode encoded an index into said array the vm could use to call the
-  correct builtin, this is now just a fn ptr, see above and below:
+  correct builtin, this is now just a fn pointer, see above for the reference
+  in the bytecode and below for the definition:
 
     ```rust
     type BuiltinFn<'vm> = fn(&mut Vm<'vm>, &[Value]);
@@ -625,7 +750,7 @@ language runtime before):
 **The single downside is now**:
 
 The garbage collector can no longer be compacting and moving, since
-`std::collections` adts aren't movable and also own their memory, so I'd have
-to implement these on my own, which I don't want to right now, maybe in the
-future. So the garbage collector will just be a heap walking, marking and
-calling `drop` for cleanup of dead values.
+`std::collections` abstract data structures aren't movable and also own their
+memory, so I'd have to implement these on my own, which I don't want to right
+now, maybe in the future. The garbage collector will just be heap walking,
+marking and calling `drop` for cleanup of dead values.
