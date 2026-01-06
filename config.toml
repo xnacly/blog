@@ -9,7 +9,7 @@ pagination.pagerSize = 4
 [markup]
 
     [markup.highlight]
-    style = 'average'
+    style = 'emacs'
     lineNos = true
     lineNumbersInTable = false
 

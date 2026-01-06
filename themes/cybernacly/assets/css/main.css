@@ -276,30 +276,36 @@ nav:not(#TableOfContents) {
       background-color: var(--background-lighter);
     }
 
+    code {
+        color: var(--primary);
+    }
+
     pre {
       margin: 0;
       padding-top: calc(var(--spacing) / 4);
       padding-bottom: calc(var(--spacing) / 4);
+
+      code {
+          color: unset;
+      }
     }
 
     .highlight {
       padding-left: calc(var(--spacing) / 4);
       padding-right: calc(var(--spacing) / 4);
-      background-color: var(--background-lighter);
+      background-color: var(--background-darker);
       overflow-x: auto;
 
-      /* overwrite all elements with custom background colors to match the theming */
       * {
         background-color: var(--background-lighter) !important;
       }
 
-      /* highlighting lines */
       span[style*="background-color"] {
-        background-color: var(--background-lighter) !important;
+        background-color: var(--primary-dark) !important;
       }
 
       span[style*="background-color"] span {
-        background-color: var(--background-lighter) !important;
+        background-color: var(--primary-dark) !important;
       }
     }
 
@@ -317,6 +323,17 @@ nav:not(#TableOfContents) {
 
     blockquote {
       padding-top: var(--spacing);
+    }
+
+    #callout {
+        > a {
+            color: var(--text) !important;
+            background-color: var(--primary);
+        }
+
+        > a:hover {
+            color: var(--text-secondary) !important;
+        }
     }
 
     #callout.Tip {

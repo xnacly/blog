@@ -19,7 +19,8 @@ While garbage collection in gneral is a widely researched subject, the
 combindation of multiple garbage collection approaches can yieal improved
 results compared to the single components. The manchester garbage collector
 (mgc) is such a composite of several paradigms: allocation into preallocated
-memory regions, mark & sweep like reachability analysis and semi-space copying.
+memory regions, reachability analysis via recursive root set tracing and
+compacting semi-space copying.
 
 Combining these approaches enables fast allocation, low-latency for allocations
 and reduced fragmentation.
@@ -205,10 +206,11 @@ typedef struct {
 } Allocator;
 ```
 
-## Keeping track of values
+## Keeping track of allocations
 
-For the garbage collector to know which regions it handed out, these regions
-are allocated with a metadata header. Said header consists of:
+For the garbage collector to know which regions, of what size and which type it
+handed out, each region is allocated with a metadata header. Said header
+consists of:
 
 ```c
 typedef struct GcHeader {
@@ -220,7 +222,11 @@ typedef struct GcHeader {
 } GcHeader;
 ```
 
-The type bits identify the payload as one of:
+The 3 type bits identify the payload as either raw bytes, a string, a list or a
+map, see below. The header also holds a forwarding pointer for reference
+rewriting, the size of the corresponding payload and a pointer to the next
+allocation. This enables a heap scan in the sense of iterating a linked list of
+headers, helping in the rewriting process.
 
 ```c
 typedef enum {
@@ -252,8 +258,7 @@ So an allocation looks like the following:
  +----------------------+
 ```
 
-Each GcHeader is 32B, thus each heap allocation has this overhead.
-
+Each GcHeader is 32B, thus each heap allocation has an added overhead of 32B. 
 
 ```c
 void *gc_request(Gc *gc, size_t size, ObjType t) {
@@ -271,42 +276,143 @@ void *gc_request(Gc *gc, size_t size, ObjType t) {
 }
 ```
 
+As explained before, after marking all available objects, these alive objects
+are copied. This process also involves walking the chained list of headers, but
+is restricted to those with `GcHeader.marked` toggled. Each object is copied into
+`to-space` and the `GcHeader.forward` field is set to the new memory region. 
+
+## Zero cost abstractions and small Values
+
+Values in the purple garden runtime use three bits for encoding their type:
+
+```c
+typedef enum {
+  V_NONE,   // zero value, comparable to rusts Option::None
+  V_STR,    // string view
+  V_DOUBLE, // floating point number
+  V_INT,    // integer
+
+  V_TRUE,   // booleans
+  V_FALSE,
+
+  V_ARRAY,  // containers / adts
+  V_OBJ,
+} ValueType;
+```
+
+A union for storing the data for each type (excluding true and false, since
+these do not require further data). `Str` for the custom string abstraction,
+List for the dynamically growing array, Map for the hashmap, a double and an
+`int64_t`.
+
+```c
+typedef struct Value {
+  unsigned int type : 3;
+  union {
+    Str string;
+    List *array;
+    Map *obj;
+    double floating;
+    int64_t integer;
+  };
+} Value;
+```
+
+And a singular bit for marking a value as optional: `is_some`, making each type
+optionally representable:
+
+
+```c {hl_lines=[3]}
+typedef struct Value {
+  unsigned int type : 3;
+  unsigned int is_some : 1;
+  union {
+    Str string;
+    List *array;
+    Map *obj;
+    double floating;
+    int64_t integer;
+  };
+} Value;
+```
+
+Using a bit tag on `Value` itself results in the valid states of all types
+except `V_NONE` combined with `is_some` equal to true and false. While the type
+`V_NONE` can only be combined with `is_some` being false. This invariant is
+checked in the runtime and there is a specific function for determining wheter an
+instance of `Value` is optionally available:
+
+```c
+inline bool Value_is_opt(const Value *v) {
+  return v->type == V_NONE || v->is_some;
+}
+```
+
+The big advantage of this approach is enabling a zero allocation, zero copy and
+zero indirection optional implementation in the runtime, since each and all
+values can be turned into an optional value by setting the `Value.is_some` bit.
+If optionality were implemented via `V_OPTION` and with `Value.inner` being the
+value while `Value.is_some` would indicate if said option were holding
+something, this would always require an allocation, due to the recursive nature
+of this implementation.
+
+
+```nix
+# optionals
+var opt_none = std::None()
+var opt_some = std::Some([])
+std::opt::or(opt_none "anything else") # -> "anything else"
+std::opt::unwrap(opt_some) # -> []
+std::opt::expect(opt_some "would panic with this message") # -> []
+std::opt::is_some(opt_some) # -> true 
+std::opt::is_none(opt_none) # -> true 
+```
+
+Standard library functions interacting with optionals are in `std::opt` and
+many functions in other packages are returning or accepting optional values.
+Functions in this package are trivial to implement with this value design, for
+instance `std::opt::{some, none, or}`:
+
+```c
+static void pg_builtin_opt_some(Vm *vm) {
+  Value inner = ARG(0);
+  inner.is_some = true;
+  RETURN(inner);
+}
+
+// INTERNED_NONE is a static Value instance thats always available to the runtime
+
+static void pg_builtin_opt_none(Vm *vm) { RETURN(*INTERNED_NONE); }
+
+static void pg_builtin_opt_or(Vm *vm) {
+  Value lhs = ARG(0);
+  Value rhs = ARG(1);
+  ASSERT(Value_is_opt(&lhs), "Or: lhs wasnt an Optional");
+  if (!lhs.is_some) {
+    RETURN(rhs);
+  } else {
+    lhs.is_some = false;
+    RETURN(lhs);
+  }
+}
+```
+
+The design also allows for numeric Value instances without allocations, trading
+smaller Value sizes for less heap allocations in hot paths of the runtime.
+
 ## Differentiating heap and non-heap values
 
 For purple garden, neither booleans, doubles or integers require heap
 allocation. Strings which are known at compile time are simply windows into the
-initial input the interpreter gets. Thus some marker for distinguishing between
-heap values and non heap values is necessary via `Value.is_heap`:
+initial input the interpreter gets, therefore not heap allocated via `gc_alloc`
+and not subject to marking or collection.
 
-```c
-typedef enum {
-  V_NONE,
-  V_STR,
-  V_DOUBLE,
-  V_INT,
-  V_TRUE,
-  V_FALSE,
-  V_ARRAY,
-  V_OBJ,
-} ValueType;
+Thus a marker for distinguishing between heap values and non heap values is
+necessary: `Value.is_heap`. Only values with this bit toggled are considered
+for marking, collection and passed to both the copy and rewrite phases of the
+garbage collector.
 
-typedef struct List {
-  size_t cap;
-  size_t len;
-  Value *arr;
-} List;
-
-typedef struct MapEntry {
-  uint32_t hash;
-  Value value;
-} MapEntry;
-
-typedef struct Map {
-  size_t cap;
-  size_t len;
-  MapEntry *buckets;
-} Map;
-
+```c {hl_lines=[2]}
 typedef struct Value {
   unsigned int is_heap : 1;
   unsigned int type : 3;
@@ -320,11 +426,128 @@ typedef struct Value {
 } Value;
 ```
 
-## Zero cost abstractions and small Values
-
 ## Dynamicly growable bump allocation
 
+{{<callout type="Info - Growable bump allocators">}}
+For an in depth commentary on bump allocation, growable chunks, mmap and
+segmented lists build on top of these concepts, see the C part of my recent
+article: [Porting a Segmented List From C to
+Rust](/posts/2025/porting-a-segmented-list-from-c-to-rust/): [C
+Implementation](/posts/2025/porting-a-segmented-list-from-c-to-rust/#c-implementation).
+{{</callout>}}
+
+Since allocations are expensive due to them requiring a system interaction via
+syscalls, purple garden is designed to reduce syscalls as much as possible. To
+archive this, a growing bump allocator is used. Opun getting a request the bump
+allocator cant satisfy, the allocator itself requests a new chunk of memory
+from the operating system. This chunk is double the size of the previous one,
+while the first chunk is as large as the page size of the system it is running
+on.
+
 ## String abstraction
+
+Since c style strings suck due to them not having a length associated at all
+times, purple garden has a string abstraction built-in. It iterates on the
+computationally expensive c string interactions by making hashing and length
+first class citizen. `Str` is a view into a buffer it doesn't manage, it holds
+a pointer to a buffer, a length and a hash. Its backing storage is immutable.
+`Str` is cheap to copy and therefore kept by value, not by reference in `Value`.
+
+```c
+typedef struct __Str {
+  uint64_t hash;
+  uint32_t len;
+  const uint8_t *p;
+} Str;
+```
+
+`Str.length` is computed at creation time. A static string thats know when
+compiling the runtime (things like error messages or string representations of
+value type names), is passed to the `STRING` macro:
+
+```c
+#define STRING(str)                                                            \
+  ((Str){.len = sizeof(str) - 1, .p = (const uint8_t *)str, .hash = 0})
+```
+
+For strings included in the input to the runtime, the runtime executes. A
+different approach is used, for instance, consider something like:
+
+```nix
+std::println("Hello" "World")
+```
+
+In this example both sizes and hash of `"Hello"` and `"World"` are known as
+soon as the lexer determines them to be string tokens. Abusing this fact and
+the fact, that all characters of a string have to be walked, both the length
+and the hash are computed while the lexer recognises strings:
+
+```c
+// ! error handling omitted for clarity
+string: {
+    // skip "
+    l->pos++;
+    size_t start = l->pos;
+    uint64_t hash = FNV_OFFSET_BASIS;
+
+    char cc = l->input.p[l->pos];
+    for (; cc > 0 && cc != '"'; l->pos++, cc = l->input.p[l->pos]) {
+        hash ^= cc;
+        hash *= FNV_PRIME;
+    }
+
+    Token *t = CALL(a, request, sizeof(Token));
+    *t = (Token){0};
+    t->type = T_STRING;
+    t->string = (Str){
+        .p = l->input.p + start,
+        .len = l->pos - start,
+        .hash = hash,
+    };
+
+    l->pos++;
+    return t;
+}
+```
+
+Hashing is done via
+[FNV-1a](https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function#FNV-1a_hash).
+Computing hashes of strings created at runtime, a complementary `Str_hash`
+function is provided:
+
+```c
+inline uint64_t Str_hash(const Str *str) {
+  uint64_t hash = FNV_OFFSET_BASIS;
+  for (size_t i = 0; i < str->len; i++) {
+    hash ^= (uint64_t)str->p[i];
+    hash *= FNV_PRIME;
+  }
+  return hash;
+}
+```
+
+There is a small internal api built on top of this abstraction:
+
+```c
+char Str_get(const Str *str, size_t index);
+Str Str_from(const char *s);
+Str Str_slice(const Str *str, size_t start, size_t end);
+Str Str_concat(const Str *a, const Str *b, Allocator *alloc);
+bool Str_eq(const Str *a, const Str *b);
+void Str_debug(const Str *str);
+int64_t Str_to_int64_t(const Str *str);
+double Str_to_double(const Str *str);
+```
+
+While the `str` standard library package exposes `str::append`, `str::lines`
+and `str::slice`:
+
+```nix
+std::str::append("Hello" " World") # Hello World
+std::str::slice("Hello" 0 2) # hel
+std::str::slice("Hello" 1 2) # el
+std::str::lines("hello\nworld") # [hello world]
+```
 
 ## Triggering garbage collection
 
@@ -399,7 +622,7 @@ language runtime before):
     type BuiltinFn<'vm> = fn(&mut Vm<'vm>, &[Value]);
     ```
 
-The single downside is now:
+**The single downside is now**:
 
 The garbage collector can no longer be compacting and moving, since
 `std::collections` adts aren't movable and also own their memory, so I'd have
