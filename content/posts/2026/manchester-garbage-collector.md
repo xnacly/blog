@@ -1,6 +1,6 @@
 ---
-title: "The Manchester Garbage Collector for purple-garden"
-summary: "A deep dive into purple-garden's hybrid garbage collector and its implementation"
+title: "The Manchester Garbage Collector and purple-garden's runtime"
+summary: "A deep dive into purple-garden's runtime and semispace copying garbage collector with explicit root enumeration and bump allocation"
 date: 2026-01-02T17:51:42+01:00
 draft: true
 tags:
@@ -13,17 +13,18 @@ garbage collector #10](https://github.com/xnacly/purple-garden/pull/10) for
 purple-garden. This article is a deep dive into its inner workings and why it
 is designed in the way it is.
 
-# Init
+# Intro
 
 While garbage collection in general is a widely researched subject, the
-combination of multiple garbage collection approaches can yield improved
-results compared to the single components. The manchester garbage collector
-(mgc) is such a composite of several paradigms: allocation into preallocated
-memory regions, reachability analysis via recursive root set tracing and
-compacting semi-space copying.
+combination of multiple garbage collection techniques can yield improved
+results compared to relying on a single strategy. The manchester garbage
+collector (mgc) is such a composite of several paradigms: allocation into
+preallocated memory regions, reachability analysis via recursive root set
+tracing and compacting semi-space copying. At the same time this is not novel,
+but specifically engineered for this runtime.
 
-Combining these approaches enables fast allocation, low-latency for allocations
-and reduced fragmentation.
+Combining these approaches enables fast allocation, low allocation latency and
+reduced fragmentation.
 
 # Purple-garden
 
@@ -41,7 +42,7 @@ std::println(std::runtime::type(v) std::len(v)) # str 11
 ```
 
 
-Purple garden is focussed on embeddablity and ease of use as a scripting
+Purple-garden is focussed on embeddablity and ease of use as a scripting
 language. For this, it has a small memory footprint, a high performance runtime
 and a minimalist, yet useful standard library. It is implemented in C as a
 register-based bytecode compiler and virtual machine.
@@ -150,7 +151,7 @@ allocator which are implemented as a segmented list of memory regions allocated
 through `mmap`.
 
 After copying the from-space is reset, but not deallocated. Then from-space and
-to-space are swapped, so from-space is now the to-space, and vise versa.
+to-space are swapped, so from-space is now the to-space, and vice versa.
 
 ## Rewriting references
 
@@ -223,7 +224,8 @@ typedef struct GcHeader {
 
 The 3 type bits identify the payload as either raw bytes, a string, a list or a
 map, see below. The header also holds a forwarding pointer for reference
-rewriting, the size of the corresponding payload and a pointer to the next
+rewriting, the size of the corresponding payload (Object sizes are capped at
+64KB; this matches current runtime needs) and a pointer to the next
 allocation. This enables a heap scan in the sense of iterating a linked list of
 headers, helping in the rewriting process.
 
@@ -280,7 +282,7 @@ are copied. This process also involves walking the chained list of headers, but
 is restricted to those with `GcHeader.marked` toggled. Each object is copied into
 `to-space` and the `GcHeader.forward` field is set to the new memory region. 
 
-## Zero cost abstractions and small Values
+## (Almost) Zero cost abstractions and small Values
 
 Values in the purple garden runtime use three bits for encoding their type:
 
@@ -437,7 +439,7 @@ Implementation](/posts/2025/porting-a-segmented-list-from-c-to-rust/#c-implement
 
 Since allocations are expensive due to them requiring a system interaction via
 syscalls, purple garden is designed to reduce syscalls as much as possible. To
-archive this, a growing bump allocator is used. Upon getting a request the bump
+achieve this, a growing bump allocator is used. Upon getting a request the bump
 allocator cant satisfy, the allocator itself requests a new chunk of memory
 from the operating system. This chunk is double the size of the previous one,
 while the first chunk is as large as the page size of the system it is running
@@ -557,8 +559,10 @@ machine down substantially and thus introduce latency in both execution and
 allocation speeds.
 
 To circumvent this, the threshold check is only performed after leaving a
-scope, this has the benefit of omitting all objects one would have to
-consider as alive in the scope before the vm left said scope.
+scope, this has the benefit of omitting all objects one would have to consider
+as alive in the scope before the vm left said scope. Triggering the gc cycle by
+piggy backing on control flow and memory usage makes the gc behaviour easier to
+reason about.
 
 ```c
     case OP_RET: {
@@ -596,6 +600,346 @@ std::println(combination)
 std::runtime::gc::cycle()
 ```
 
+## Marking a Value
+
+As previously explained, only values with `is_heap` should be considered roots
+and to be managed by the gc. Thus `mark` has an early exit condition:
+
+```c
+static inline void mark(Gc *gc, const Value *val) {
+  if (!val || !val->is_heap) {
+    return;
+  }
+
+  // [...]
+}
+```
+
+Since `Str` wraps the underlying gc managed buffer (`GC_OBJ_RAW`) while not
+being allocated itself, this has to be handled differently from `V_ARRAY` and
+`V_OBJ`:
+
+```c
+static inline void mark(Gc *gc, const Value *val) {
+  // [...]
+
+  void *payload = NULL;
+  switch ((ValueType)val->type) {
+  case V_STR:
+    GcHeader *raw = (GcHeader *)((uint8_t *)val->string.p - sizeof(GcHeader));
+    raw->marked = true;
+    break;
+    return;
+  case V_ARRAY:
+    payload = (void *)val->array;
+    break;
+  case V_OBJ:
+    payload = (void *)val->obj;
+    break;
+  default:
+    return;
+  }
+
+  // [...]
+}
+```
+
+The payload of arrays and objects is allocated, thus they are casted and
+assigned. If the resulting payload is less than `sizeof(GcHeader)` either a
+heap corruption or a gc bug occured, thus we assert. Then an exit condition for
+already marked headers is created.
+
+```c
+static inline void mark(Gc *gc, const Value *val) {
+  // [...]
+
+  ASSERT((uintptr_t)payload > sizeof(GcHeader),
+         "payload too small, GC logic bug, this shouldnt happen");
+
+  GcHeader *h = (GcHeader *)((char *)payload - sizeof(GcHeader));
+  if (!h || h->marked) {
+    return;
+  }
+
+  h->marked = 1;
+
+  // [...]
+```
+
+Since we already handled a string, we can now switch on the `GcHeader->type`
+bits and recursively mark each member of an array and each value of an object.
+
+```c
+static inline void mark(Gc *gc, const Value *val) {
+  // [...]
+
+  switch ((ObjType)h->type) {
+  case GC_OBJ_LIST: {
+    List *l = (List *)payload;
+    for (size_t i = 0; i < l->len; i++) {
+      mark(gc, &l->arr[i]);
+    }
+    break;
+  }
+  case GC_OBJ_MAP:
+    Map *m = (Map *)payload;
+    for (size_t i = 0; i < m->cap; i++) {
+      MapEntry e = m->buckets[i];
+      mark(gc, &e.value);
+    }
+  default:
+    return;
+  }
+}
+```
+
+## Letting mark loose on registers and call frames
+
+Since we need to mark our root set in `gc_cycle` and our root set consists of
+both the registers, the variables in the current and all previous call frames,
+we need to call mark on each:
+
+```c
+void gc_cycle(Gc *gc) {
+  if (!gc->allocated_since_last_cycle) {
+    return;
+  }
+  gc->allocated_since_last_cycle = 0;
+  Vm *vm = ((Vm *)gc->vm);
+  for (size_t i = 0; i < REGISTERS; i++) {
+    const Value *ri = vm->registers + i;
+    mark(gc, ri);
+  }
+
+  for (Frame *f = vm->frame; f; f = f->prev) {
+    for (size_t i = 0; i < f->variable_table.cap; i++) {
+      MapEntry *me = &f->variable_table.buckets[i];
+      if (me->hash) {
+        mark(gc, &me->value);
+      }
+    }
+  }
+
+  // [...]
+}
+```
+
+## Copying marked GcHeader
+
+After marking each `Value` and `GcHeader` referenced by the root set, we copy
+those to the `to-space` / `new` allocator. We also rebuild the `GcHeader` chain
+of copied headers.
+
+```c
+void gc_cycle(Gc *gc) {
+    // [...]
+
+  GcHeader *new_head = NULL;
+  size_t new_alloc = 0;
+  for (GcHeader *h = gc->head; h; h = h->next) {
+    if (!h->marked) {
+      continue;
+    }
+
+    void *buf = CALL(gc->new, request, h->size + sizeof(GcHeader));
+    GcHeader *nh = (GcHeader *)buf;
+    void *new_payload = (char *)buf + sizeof(GcHeader);
+    memcpy(nh, h, sizeof(GcHeader) + h->size);
+    nh->next = new_head;
+    new_head = nh;
+    h->forward = (uintptr_t)new_payload;
+    nh->forward = 0;
+    nh->marked = 0;
+    new_alloc += h->size;
+  }
+
+    // [...]
+}
+```
+
+## Forwarding pointers and Rewriting references
+
+> `mark` and `rewrite_nested` are subject to blowing the stack up, both will
+> use a work list in the future
+
+Each `GcHeader.forward` is then used to update all references to the newly
+copied regions:
+
+```c
+static inline void *forward_ptr(void *payload) {
+  if (!payload) {
+    return NULL;
+  }
+
+  GcHeader *old = (GcHeader *)((char *)payload - sizeof(GcHeader));
+  if (!old) {
+    // not a gc object, hitting this is a bug
+    unreachable();
+  }
+
+  if (old->type < GC_OBJ_RAW || old->type > GC_OBJ_MAP) {
+    // either already in newspace or not a heap object; return payload unchanged
+    return payload;
+  }
+
+  if (old->forward) {
+    return (void *)old->forward;
+  }
+
+  // normally this would be unreachable, but since pg doesnt clear registers
+  // after insertions into adts or the variable table, references to heap data
+  // can be both in the variable table and registers at the same time, thus
+  // allowing for multiple forward_ptr calls since there are multiple references
+  // to a single point in memory. This results in double forwarding and other
+  // shenanigans. Just returning the payload if no forward was found is correct
+  // and a fix.
+  return payload;
+}
+```
+
+`rewrite` is really as simple as it gets:
+
+```c
+static inline void rewrite(Gc *gc, Value *v) {
+  if (!v->is_heap) {
+    return;
+  }
+
+  switch ((ValueType)v->type) {
+  case V_STR:
+    v->string.p = (const uint8_t *)forward_ptr((void *)v->string.p);
+    break;
+  case V_ARRAY:
+    v->array = (List *)forward_ptr((void *)v->array);
+    break;
+  case V_OBJ:
+    v->obj = (Map *)forward_ptr((void *)v->obj);
+    break;
+  default:
+    return;
+  }
+}
+```
+
+`rewrite_nested` iterates on `rewrite` by nesting the process for objects and
+arrays:
+
+```c
+void rewrite_nested(Gc *gc, Value *v) {
+  rewrite(gc, v);
+
+  switch (v->type) {
+  case V_ARRAY:
+    for (size_t i = 0; i < v->array->len; i++) {
+      rewrite_nested(gc, &v->array->arr[i]);
+    }
+    break;
+  case V_OBJ:
+    for (size_t i = 0; i < v->obj->cap; i++) {
+      MapEntry *me = &v->obj->buckets[i];
+      if (me->hash) {
+        rewrite_nested(gc, &me->value);
+      }
+    }
+    break;
+  default:
+    break;
+  }
+}
+```
+
+Put together in `gc_cycle`, starting with the registers, each entry in each
+variable table of each frame and each header in the `GcHeader` chain, all
+`Value`s are rewritten. 
+
+```c
+void gc_cycle(Gc *gc) {
+  // [...]
+
+  for (size_t i = 0; i < REGISTERS; i++) {
+    Value *ri = &vm->registers[i];
+    rewrite(gc, ri);
+  }
+
+  for (Frame *f = vm->frame; f; f = f->prev) {
+    for (size_t i = 0; i < f->variable_table.cap; i++) {
+      MapEntry *me = &f->variable_table.buckets[i];
+      if (me->hash) {
+        rewrite_nested(gc, &me->value);
+      }
+    }
+  }
+
+  for (GcHeader *h = new_head; h; h = h->next) {
+    switch (h->type) {
+    case GC_OBJ_LIST: {
+      List *l = (List *)((uint8_t *)h + sizeof(GcHeader));
+      for (size_t i = 0; i < l->len; i++) {
+        rewrite_nested(gc, &l->arr[i]);
+      }
+      break;
+    }
+    case GC_OBJ_MAP: {
+      Map *m = (Map *)((uint8_t *)h + sizeof(GcHeader));
+      for (size_t i = 0; i < m->cap; i++) {
+        MapEntry *me = &m->buckets[i];
+        if (me->hash) {
+          rewrite_nested(gc, &me->value);
+        }
+      }
+      break;
+    }
+    case GC_OBJ_STR: {
+      Str *str = (Str *)((uint8_t *)h + sizeof(GcHeader));
+      str->p = forward_ptr((void *)str->p);
+      break;
+    }
+    default:
+      break;
+    }
+  }
+
+  // [...]
+}
+```
+
+## Bookkeeping after collection
+
+```c
+void gc_cycle(Gc *gc) {
+  // [...]
+  gc->head = new_head;
+  SWAP_STRUCT(gc->old, gc->new);
+  CALL(gc->new, reset);
+  gc->allocated = new_alloc;
+}
+```
+
+After mark, copy and rewrite, the chain is attached to `Gc.head`,
+
+The `from` and `to`-space swap places via `SWAP_STRUCT`:
+
+```c
+#define SWAP_STRUCT(A, B)                                                      \
+  do {                                                                         \
+    _Static_assert(__builtin_types_compatible_p(typeof(A), typeof(B)),         \
+                   "SWAP_STRUCT arguments must have identical types");         \
+                                                                               \
+    typeof(A) __swap_tmp = (A);                                                \
+    (A) = (B);                                                                 \
+    (B) = __swap_tmp;                                                          \
+  } while (0)
+```
+
+The new (new, since the previous old allocator is now the new allocator)
+allocator is reset with `CALL`, which is a macro:
+
+```c
+#define CALL(SELF, METHOD, ...) (SELF)->METHOD((SELF)->ctx, ##__VA_ARGS__)
+```
+
+Expanding to `(gc->new)->reset((gc->new)->ctx);`. 
+
 ## Tuning
 
 As the virtual machine is configurable via the `VmConfig` structure, so is the
@@ -617,10 +961,14 @@ typedef struct {
 } Vm_Config;
 ```
 
-This configuration is passed to `Vm_new` and attached to the `Vm` structure.
+This configuration is passed to `Vm_new` and attached to the `Vm` structure. It
+allows for fully disabling the garbage collector, setting a total size for the
+gc heap, and a threshold of the gc heap size in percent at which the gc should
+start a cycle.
+
 For non embedding purposes, specifically for simply running the interpreter,
-each option, its short name, its default value, its type and its description
-is defined in the list of cli flags the purple garden binary accepts:
+each option, its short name, its default value, its type and its description is
+defined in the list of cli flags the purple garden binary accepts:
 
 ```c
 #define CLI_ARGS                                                               \
@@ -676,12 +1024,71 @@ Vm vm = Vm_new(
   }, pipeline_allocator, &gc);
 ```
 
-<!-- TODO: finish this -->
-
-
 # Comparing mgc to other gc idioms and other reasoning
 
-# (non-)Portability to Rust
+The obvious question at this point is of purpose and complexity. Why design a
+garbage collector leveraging multiple paradigms when seemingly each paradigm on
+its own could suffice?
+
+## Why Bump allocation instead of malloc
+
+First and foremost, keeping allocations fast is crucial for this kind of
+runtime. For this only bump allocation is an option, simply because syscalls
+are slow, multiple for many small objects are even slower and hot paths would
+explode. Due to purple garden being optimised for allocation and not
+deallocation, an alternative to bump allocation is out of the question.
+
+## Why Copying, Compacting and resetting whole Heap regions instead of single value dealloc
+
+Since this restricts the collection of objects due to bump allocation
+disallowing the deallocation of single objects, a copy to-space, from-space
+collection approach is the most evident. Copying also has the benefit of bulk
+reclamation and reduced fragmentation, especially compared to single-object
+deallocation. 
+
+## Why Register and variable tracing vs heap scanning
+
+The root set is absolute and known at all times. Knowing these values
+determining reachability is the most efficient implementation, especially
+compared to walking the whole gc heap. Why waste cycles for scanning the heap
+if all root values are known at all times and headers are chained?
+
+## Why not X
+
+On the other side of the initial question is a list of concepts some garbage
+collectors of famous runtimes employ. These were purposely omitted, both for
+keeping the garbage collector safe from feature creep and due to the runtime
+being single thread, the gc being stop the world and in general me disallowing
+concurrent mutations of any state, especially the gc state and root set:
+
+- **write barriers**/**incremental**: Only necessary for concurrent collectors,
+  but purple garden is single-threaded and stop-the-world. All objects are
+  known at collection time.
+- **generational**: optimised for long-lived objects, but purple-garden is an
+  embeddable scripting language, it is designed and engineered for being cheap
+  and quick to spin up for something like a plugin programming behaviour
+  running on each event or entity in a game. It is specifically targeted for
+  short lived execution and thus allocations.
+- **RC**/**ARC**: large runtime overhead and cycles need extra non trivial
+  detection logic, which would slow hot paths down
+- **escape analysis**: optimises for reducing heap allocation, but mgc makes
+  allocations extra cheap, plus purple gardens bytecode is compiled from its
+  abstract syntax tree into a compact format, there is no immediate
+  representation with enough lifetime info for performing escape analysis
+
+# Gc invariants and assumptions
+
+This is a short list included for completeness, violating one of these
+invariants results in undefined behavior.
+
+1. depends on registers not being cleared
+2. values not being duplicated incorrectly
+3. `Value.type=V_STR` and `Value.is_heap=1` to mean the string is heap
+   allocated, else its 'allocated' by the lexer (technically by mmaping the
+   input into process memory, but you get the gist)
+4. vm discipline around setting `Value.is_heap`
+
+# (non-)Portability to Rust and Design Improvements
 
 I'm currently in the process of rewriting purple garden in Rust for a plethora
 of reasons (these are not that easy to understand if one hasn't worked on a
@@ -746,11 +1153,3 @@ language runtime before):
     ```rust
     type BuiltinFn<'vm> = fn(&mut Vm<'vm>, &[Value]);
     ```
-
-**The single downside is now**:
-
-The garbage collector can no longer be compacting and moving, since
-`std::collections` abstract data structures aren't movable and also own their
-memory, so I'd have to implement these on my own, which I don't want to right
-now, maybe in the future. The garbage collector will just be heap walking,
-marking and calling `drop` for cleanup of dead values.
