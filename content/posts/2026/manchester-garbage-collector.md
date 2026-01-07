@@ -2,7 +2,6 @@
 title: "The Manchester Garbage Collector and purple-garden's runtime"
 summary: "A deep dive into purple-garden's runtime and semispace copying garbage collector with explicit root enumeration and bump allocation"
 date: 2026-01-02T17:51:42+01:00
-draft: true
 tags:
   - c
   - pldev
