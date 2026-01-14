@@ -3,8 +3,8 @@ title: "Poking holes into bytecode with peephole optimisations"
 date: 2026-01-14
 summary: "First optimizations I made while redesigning and semi-porting the purple-garden runtime from C to Rust"
 tags: 
-- Pldev
-- Rust
+- pldev
+- rust
 ---
 
 This article highlights the first optimizations I made while redesigning and
