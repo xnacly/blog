@@ -1,7 +1,7 @@
 ---
 title: "Peeking holes into bytecode with peephole optimisations"
 date: 2026-01-14
-summary: "First optimizations I made while redesigning and semi-porting the runtime from C to Rust"
+summary: "First optimizations I made while redesigning and semi-porting the purple-garden runtime from C to Rust"
 tags: 
 - Pldev
 - Rust
