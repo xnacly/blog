@@ -12,8 +12,8 @@ semi-porting the runtime from C to Rust. These aren't benchmarked or verified,
 since the virtual machine is currently under construction and will probably be
 finished this week.
 
-At a high level, purple-garden current works like this, with `2+3*4-1` as an
-exemplary input:
+At a high level, purple-garden current works like this, with `(2+3)*(4-1)` as
+an exemplary input:
 
 ```text
 .
@@ -264,6 +264,57 @@ pub fn const_binary(window: &mut [Op]) {
 }
 ```
 
+{{<callout type="Warning">}}
+As
+[mort96](https://news.ycombinator.com/reply?id=46676940&goto=item%3Fid%3D46624396%2346676940)
+pointed out:
+
+
+> Is this valid? The first const_binary optimization changes the values of r0
+> and r1 (before the optimization they're 2 and 3, after the optimization
+> they're unknown). The second const_binary optimization changes the values of
+> r1 and r0 (before the optimization they're 4 and 1, after the optimization
+> they're unknown). An optimizer which analyzes the whole block would be able
+> to see that r0 and r1 are written to before they're read from, but the
+> peephole optimizer only sees the 3 instructions, right?
+
+Well, as it turns it, it isn't, any instructions reusing registers optimised
+away under the assumption, that this could not happen, which is wrong, for
+instance considering:
+
+```asm
+__entry:
+        load_imm r2, #5
+        load_imm r3, #3
+        mul r0, r2, r3
+```
+
+In this example, with our previous assumption, we would be able to merge all
+three instructions into a single `load_imm r0, 15`. If we were to extend the
+example by a single instruction reusing `r2`, `r3` or both, our assumptions do
+not hold any longer:
+
+```asm
+__entry:
+        load_imm r2, #5
+        load_imm r3, #3
+        mul r0, r2, r3 ; if we were to apply the pass here,
+                       ; both r2 and r3 would not have 
+                       ; any values in them, thus the below
+                       ; instruction would be operating on 
+                       ; undefined registers, which is 
+                       ; undefined behaviour and crashes 
+                       ; the virtual machine
+        add r0, r2, r3
+```
+
+Since this would result in an optimisation breaking behaviour, I disabled it in
+[`1141edf`](https://github.com/xnacly/purple-garden/commit/1141edfc851a9242ef03cd0431bead74c18a9c01). 
+
+However, since constant folding is in the scope of IR optimisation passes, this
+will not be a loss for the virtual machine.
+
+{{</callout>}}
 
 ## Observability
 
