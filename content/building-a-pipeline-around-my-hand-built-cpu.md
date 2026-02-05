@@ -1,26 +1,37 @@
 ---
-title: "Building a Pipeline For My 8bit Cpu"
+title: "Building a Stack of Tools For My 8bit Cpu"
 date: 2026-02-03
 summary: "Assembler, disassembler and emulator for my own 8bit CPU"
 draft: true
 ---
 
-<!-- TODO: intro -->
+I will focus on building the assembler, disassembler, and emulator for my 8-bit
+CPU in this post. The ISA is intentionally simple and only described to the
+extent required to understand the tools. Keep in mind all of this is a work in
+progress and I may iterate on the ideas and the isa mentioned here.
 
-Keep in mind all of this is a work in progress and I may iterate on the ideas
-and the isa mentioned here.
+My goal is to build the tooling around the architecture I envision and once
+thats done build its hardware.
 
-# Defining the ISA
+# The hypothetical hardware
 
 The `t8` processor is built around the idea of having four registers, each one
 holding 8 bit:
 
 | Register | Description          |
 | -------- | -------------------- |
-| AC       | Accumulator          |
+| A        | Accumulator          |
 | DEST     | Destination register |
 | IR       | Instruction register |
 | PC       | Program counter      |
+
+The cpu is deeply constrained, since it uses 8bits for all registers, every
+instruction and thus the address space. Meaning a program can only be 256
+instructions long, address the memory space from byte 0 to 255 and only jump
+from instruction 0 to 256. Furthermore the upmost 16 bytes are reserved for
+memory mapped I/O.
+
+# Defining the ISA
 
 The following instruction set is currently supported by the assembler, the
 disassembler and the emulator:
