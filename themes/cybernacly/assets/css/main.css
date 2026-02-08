@@ -23,32 +23,6 @@
   word-break: all;
 }
 
-/* jetbrains-mono-regular - latin */
-@font-face {
-  font-family: "JetBrains Mono";
-  font-style: normal;
-  font-weight: 400;
-  src:
-    local(""),
-    url("/fonts/jetbrains-mono-v13-latin-regular.woff2") format("woff2"),
-    /* Chrome 26+, Opera 23+, Firefox 39+ */
-      url("/fonts/jetbrains-mono-v13-latin-regular.woff") format("woff");
-  /* Chrome 6+, Firefox 3.6+, IE 9+, Safari 5.1+ */
-}
-
-/* jetbrains-mono-italic - latin */
-@font-face {
-  font-family: "JetBrains Mono";
-  font-style: italic;
-  font-weight: 400;
-  src:
-    local(""),
-    url("/fonts/jetbrains-mono-v13-latin-italic.woff2") format("woff2"),
-    /* Chrome 26+, Opera 23+, Firefox 39+ */
-      url("/fonts/jetbrains-mono-v13-latin-italic.woff") format("woff");
-  /* Chrome 6+, Firefox 3.6+, IE 9+, Safari 5.1+ */
-}
-
 /* this should fix the ios mobile code blog font size bug
  * recorded here: https://github.com/adityatelange/hugo-PaperMod/issues/828 */
 code {
@@ -60,7 +34,7 @@ code {
 
 body {
   color: var(--text);
-  font-family: "JetBrains Mono", monospace;
+  font-family: "MapleMono NF", monospace;
   background-image: radial-gradient(
       var(--secondary-transparent) 20%,
       transparent 20%
@@ -517,4 +491,33 @@ details[open] summary::before {
   .centered {
     max-width: 90vw;
   }
+}
+
+/* fonts */
+/* MapleMono NF - normal */
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: normal;
+  src: url("/fonts/MapleMono-NF-Thin.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-ExtraLight.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-Light.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-Regular.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-Medium.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-SemiBold.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-Bold.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-ExtraBold.ttf") format("truetype");
+}
+
+/* MapleMono NF - italic */
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: italic;
+  src: url("/fonts/MapleMono-NF-ThinItalic.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-ExtraLightItalic.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-LightItalic.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-Italic.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-MediumItalic.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-SemiBoldItalic.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-BoldItalic.ttf") format("truetype"),
+       url("/fonts/MapleMono-NF-ExtraBoldItalic.ttf") format("truetype");
 }
