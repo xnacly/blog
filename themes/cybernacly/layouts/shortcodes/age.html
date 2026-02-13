@@ -1,0 +1,6 @@
+{{ $now := now }}
+{{ $age := sub $now.Year site.Params.birth.year }}
+{{ if lt (int $now.Month) site.Params.birth.month }}
+  {{ $age = sub $age 1 }}
+{{ end }}
+{{ $age }}

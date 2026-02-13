@@ -44,3 +44,7 @@ description = "A blog all around tech, programming and whatever im currently int
     github = "https://github.com/xnacly"
     rss = "https://xnacly.me/index.xml"
     email = "mailto:contact@xnacly.me"
+
+    [params.birth]
+    year  = 2003
+    month = 2
