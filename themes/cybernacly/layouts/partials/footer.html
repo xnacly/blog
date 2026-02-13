@@ -1,1 +1,2 @@
-<p>{{ now.Year }} - xnacly</p>
+{{ $now := now.UTC }}
+<p>xnacly <code>λ</code> Last built: <code>{{ $now.Format "2006-01-02 15-04-05" }}</code></p>
