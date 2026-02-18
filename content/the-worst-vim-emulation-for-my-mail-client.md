@@ -12,7 +12,7 @@ tags:
 
 ![postbote screenshot main page](/postbote/postbote.png)
 
-I wasnt able to grasp mutt in 25 seconds and decided I have to write my own
+I wasnt able to grasp mutt in 25 **seconds** and decided I have to write my own
 alternative terminal mail client, its name is:
 [postbote](https://github.com/xnacly/postbote). It does way less, is a work in
 progress but its mine and therefore I need vi style motions. I also need:
