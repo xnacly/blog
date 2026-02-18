@@ -2,7 +2,6 @@
 title: "Building The Worst Vi Emulation for My Mail Client"
 summary: "Naive vi like motion subset emulation bolted on top of bubbletea in 120loc"
 date: 2026-02-18T00:02:23+01:00
-draft: true
 tags:
 - Go
 - Vim
