@@ -1,6 +1,6 @@
 ---
-title: "Building The Worst Vim Emulation for My Mail Client"
-summary: "Naive vim motion subset emulation bolted on top of bubbletea in 120loc"
+title: "Building The Worst Vi Emulation for My Mail Client"
+summary: "Naive vi like motion subset emulation bolted on top of bubbletea in 120loc"
 date: 2026-02-18T00:02:23+01:00
 draft: true
 tags:
@@ -41,6 +41,10 @@ style motions. I also need:
   ```
 
 # Motions (my definition)
+
+> I'm aware this isn't fully what vi motions do, simply because they are way
+> more powerful. The goal is to implement a subset of this composability so I
+> have my muscle memory while looking at and writing my emails.
 
 I define a motion as a combination of a modifier and a command. Since I wont
 add visual selections or other ranges I decided to go with the modifier being a
