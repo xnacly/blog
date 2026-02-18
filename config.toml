@@ -9,7 +9,7 @@ pagination.pagerSize = 4
 [markup]
 
     [markup.highlight]
-    style = 'emacs'
+    style = 'rose-pine-dawn'
     lineNos = true
     lineNumbersInTable = false
 

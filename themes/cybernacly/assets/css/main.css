@@ -1,21 +1,23 @@
 :root {
   --spacing: 12px;
-  --background: #07080d;
-  --background-darker: #05060a;
-  --background-lighter: #0e0e10;
+  --background: #eff1f5;
+  --background-darker: #e6e9ef;
+  --background-lighter: #dce0e8;
   --primary: #8839ef;
   --primary-darker: #6626b3;
   --primary-dark: #2d0f58;
   --secondary: #8839ef;
   --secondary-transparent: #8839ef10;
-  --text: #eff1f5;
-  --text-secondary: #b0b0b0;
+  --text: #4c4f69;
+  --text-secondary: #5c5f77;
   --warning: #df8e1d;
   --warning-dark: #a56514;
   --info: #04a5e5;
   --info-dark: #004466;
   --tip: #7287fd;
   --tip-dark: #3b49a8;
+
+  --code-bg: #faf4ed;
 }
 
 * {
@@ -35,14 +37,6 @@ code {
 body {
   color: var(--text);
   font-family: "MapleMono NF", monospace;
-  background-image: radial-gradient(
-      var(--secondary-transparent) 20%,
-      transparent 20%
-    ),
-    radial-gradient(var(--secondary-transparent) 20%, transparent 20%);
-  background-position:
-    0 0,
-    50px 50px;
   background-size: 10px 14px;
   background-color: var(--background);
   font-size: 12pt;
@@ -134,7 +128,7 @@ nav:not(#TableOfContents) {
     }
 
     h3.draft a {
-      color: var(--primary-darker);
+      color: var(--warning);
     }
 
     time {
@@ -247,11 +241,7 @@ nav:not(#TableOfContents) {
     .codeblock,
     code,
     pre {
-      background-color: var(--background-lighter);
-    }
-
-    code {
-        color: var(--primary);
+      background-color: var(--code-bg);
     }
 
     pre {
@@ -265,21 +255,16 @@ nav:not(#TableOfContents) {
     }
 
     .highlight {
-      padding-left: calc(var(--spacing) / 4);
       padding-right: calc(var(--spacing) / 4);
-      background-color: var(--background-darker);
+      background-color: var(--code-bg);
       overflow-x: auto;
 
-      * {
-        background-color: var(--background-lighter) !important;
-      }
-
       span[style*="background-color"] {
-        background-color: var(--primary-dark) !important;
+        background-color: var(--secondary-transparent) !important;
       }
 
       span[style*="background-color"] span {
-        background-color: var(--primary-dark) !important;
+        background-color: var(--secondary-transparent) !important;
       }
     }
 
@@ -299,19 +284,8 @@ nav:not(#TableOfContents) {
       padding-top: var(--spacing);
     }
 
-    #callout {
-        > a {
-            color: var(--text) !important;
-            background-color: var(--primary);
-        }
-
-        > a:hover {
-            color: var(--text-secondary) !important;
-        }
-    }
 
     #callout.Tip {
-      background-color: var(--tip-dark);
       border-color: var(--tip);
 
       h1,
@@ -323,7 +297,6 @@ nav:not(#TableOfContents) {
     }
 
     #callout.Warning {
-      background-color: var(--warning-dark);
       border-color: var(--warning);
 
       h1,
@@ -335,7 +308,6 @@ nav:not(#TableOfContents) {
     }
 
     #callout.Danger {
-      background-color: var(--primary-dark);
       border-color: var(--primary);
 
       h1,
@@ -347,7 +319,6 @@ nav:not(#TableOfContents) {
     }
 
     #callout.Info {
-      background-color: var(--info-dark);
       border-color: var(--info);
 
       h1,
@@ -360,6 +331,7 @@ nav:not(#TableOfContents) {
 
     table {
       margin-top: var(--spacing);
+      width: 100%;
       margin-bottom: var(--spacing);
       border-collapse: collapse;
 
@@ -395,8 +367,8 @@ a:after {
   content: "]";
 }
 a:hover {
-  background-color: var(--primary-dark);
-  color: var(--primary);
+  background-color: var(--primary-darker);
+  color: var(--background);
 }
 
 h1 a,
@@ -418,7 +390,7 @@ footer {
 }
 
 code {
-  font-family: "JetBrains Mono", monospace;
+  font-family: "MapleMono NF", monospace;
 }
 
 summary {
@@ -451,7 +423,6 @@ details {
   padding: calc(var(--spacing) / 2);
   border: 2px solid var(--text-secondary);
   border-left: 7px solid var(--text-secondary);
-  background-color: var(--info-dark);
   border-color: var(--info);
 }
 
@@ -494,30 +465,131 @@ details[open] summary::before {
 }
 
 /* fonts */
-/* MapleMono NF - normal */
 @font-face {
   font-family: "MapleMono NF";
   font-style: normal;
-  src: url("/fonts/MapleMono-NF-Thin.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-ExtraLight.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-Light.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-Regular.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-Medium.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-SemiBold.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-Bold.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-ExtraBold.ttf") format("truetype");
+  font-weight: 100;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-Thin.ttf") format("truetype");
 }
 
-/* MapleMono NF - italic */
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: normal;
+  font-weight: 200;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-ExtraLight.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-Light.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-Medium.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-SemiBold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-Bold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-ExtraBold.ttf") format("truetype");
+}
+
+
 @font-face {
   font-family: "MapleMono NF";
   font-style: italic;
-  src: url("/fonts/MapleMono-NF-ThinItalic.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-ExtraLightItalic.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-LightItalic.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-Italic.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-MediumItalic.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-SemiBoldItalic.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-BoldItalic.ttf") format("truetype"),
-       url("/fonts/MapleMono-NF-ExtraBoldItalic.ttf") format("truetype");
+  font-weight: 100;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-ThinItalic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: italic;
+  font-weight: 200;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-ExtraLightItalic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: italic;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-LightItalic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-Italic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-MediumItalic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: italic;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-SemiBoldItalic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-BoldItalic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "MapleMono NF";
+  font-style: italic;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/MapleMono-NF-ExtraBoldItalic.ttf") format("truetype");
 }
