@@ -16,6 +16,8 @@
   --info-dark: #004466;
   --tip: #7287fd;
   --tip-dark: #3b49a8;
+
+  --code-bg: #faf4ed;
 }
 
 * {
@@ -239,11 +241,7 @@ nav:not(#TableOfContents) {
     .codeblock,
     code,
     pre {
-      background-color: var(--background-lighter);
-    }
-
-    code {
-        color: var(--primary);
+      background-color: var(--code-bg);
     }
 
     pre {
@@ -258,12 +256,8 @@ nav:not(#TableOfContents) {
 
     .highlight {
       padding-right: calc(var(--spacing) / 4);
-      background-color: var(--background-darker);
+      background-color: var(--code-bg);
       overflow-x: auto;
-
-      * {
-        background-color: var(--background-lighter) !important;
-      }
 
       span[style*="background-color"] {
         background-color: var(--secondary-transparent) !important;
@@ -337,6 +331,7 @@ nav:not(#TableOfContents) {
 
     table {
       margin-top: var(--spacing);
+      width: 100%;
       margin-bottom: var(--spacing);
       border-collapse: collapse;
 
@@ -428,7 +423,6 @@ details {
   padding: calc(var(--spacing) / 2);
   border: 2px solid var(--text-secondary);
   border-left: 7px solid var(--text-secondary);
-  background-color: var(--info-dark);
   border-color: var(--info);
 }
 

@@ -178,7 +178,7 @@ path = "tools/bld_exmpl.rs"
 
 So there are some resources for parsing ELF, two of them I used a whole lot:
 
-1. [`man elf`](https://linux.die.net/man/5/elf) _(remember to `export MANPAGER='nvim +Man!'`)_
+1. [man elf](https://linux.die.net/man/5/elf) _(remember to `export MANPAGER='nvim +Man!'`)_
 2. [gabi.xinuos.com](https://gabi.xinuos.com/index.html)
 
 At a high level, ELF (32bit, for armv7) consists of headers and segments, it
