@@ -1,6 +1,6 @@
 ---
 title: "Compiling Match Statements to Bytecode"
-summary: "Full pipeline deepdive for the new match stmt: AST, EBB SSA IR, bytecode"
+summary: "Full pipeline deep dive for purple garden: AST, BB SSA IR, Bytecode, Optimisations"
 date: 2026-02-26T15:13:56+01:00
 draft: true
 tags:
@@ -59,10 +59,10 @@ All bodies must resolve to the same type and a default branch is required.
 Purple gardens architecture revolves around an intermediate representation
 based on a list of functions holding a list of blocks. Each block has a list of
 inputs params, a list of instructions and a singular terminator. Said
-instructions are SSA based and the blocks containing them are extended basic
-blocks, meaning each value is defined immutability and exactly once. This also
-means params to blocks and params in terminators are explicit (this enables
-ommission of phi nodes).
+instructions are SSA based and the blocks containing them are basic blocks,
+meaning each value is defined immutability and exactly once. This also means
+params to blocks and params in terminators are explicit (this enables ommission
+of phi nodes).
 
 The IR sits in the intersection of the abstract syntax tree produced by parsing
 the tokenized input and the three backends (currently only the bytecode backend
@@ -279,7 +279,7 @@ Node::Match { id, cases, default } => {
 }
 ```
 
-# Lowering to EBB SSA IR
+# Lowering to BB SSA IR
 
 <!-- TODO: -->
 
@@ -397,7 +397,29 @@ b0():
 ```
 
 # Optimisations
-<!-- TODO: -->
+
+```rust
+// purple_garden::opt
+
+pub fn ir(ir: &mut [crate::ir::Func]) {
+    for fun in ir {
+        ir::indirect_jump(fun);
+        ir::tailcall(fun);
+    }
+}
+```
+
+```rust
+fn main() {
+    // [...]
+
+    if args.opt >= 1 {
+        opt::ir(&mut ir);
+    }
+
+    // [...]
+}
+```
 
 ## Removing Useless Blocks
 
@@ -471,3 +493,27 @@ impl<'cc> Cc<'cc> {
         }
 }
 ```
+
+## Tail call optimisation
+
+Since factorial with an accumulator is embarrassingly
+[tailcallable](https://en.wikipedia.org/wiki/Tail_call)[^1], we need a pass to make
+it.
+
+<!-- TODO: show pass -->
+<!-- TODO: show fN_tail IR instead of fN -->
+<!-- TODO: show bytecode result -->
+
+With an even more fun example:
+
+```python
+fn killstack(n:int) int {
+    match {
+        n < 1000000 { killstack(n+1) }
+        { 0 }
+    }
+}
+killstack(1)
+```
+
+[^1]: It even is THE example when looking into LLVMs tailcall pass: https://gist.github.com/vzyrianov/19cad1d2fdc2178c018d79ab6cd4ef10#examples
