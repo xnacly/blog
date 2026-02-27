@@ -71,6 +71,22 @@ architecture enables decoupled codegen and a list of optimisations.
 
 # Parsing
 
+```rust
+// as called in main()
+let mut lexer = Lexer::new(&input);
+let ast = match Parser::new(&mut lexer).and_then(|n| n.parse()) {
+    Ok(a) => a,
+    Err(e) => {
+        let lines = str::from_utf8(&input)
+            .unwrap()
+            .lines()
+            .collect::<Vec<&str>>();
+        e.render(&lines);
+        std::process::exit(1);
+    }
+};
+```
+
 As shown in the intro, the match stmt follows the following format:
 
 ```text
@@ -163,6 +179,16 @@ Below I included the implementation of `Parser::parse_match`:
 ```
 
 # Typechecking
+
+```rust
+// just before lowering to IR in Lower::ir_from 
+let mut typechecker = typecheck::Typechecker::new();
+for node in ast {
+    let t = typechecker.node(node)?;
+    crate::trace!("{} resolved to {:?}", &node, t);
+}
+self.types = typechecker.finalise();
+```
 
 The purple garden type system is primitive, non-generic and based on equality.
 This design enables a single pass type checker with a very simple environment
@@ -281,7 +307,50 @@ Node::Match { id, cases, default } => {
 
 # Lowering to BB SSA IR
 
-<!-- TODO: -->
+```rust
+// as called in main()
+let lower = ir::lower::Lower::new();
+let mut ir = match lower.ir_from(&ast) {
+    Ok(ir) => ir,
+    Err(e) => {
+        let lines = str::from_utf8(&input)
+            .unwrap()
+            .lines()
+            .collect::<Vec<&str>>();
+        e.render(&lines);
+        std::process::exit(1);
+    }
+};
+```
+
+
+The intermediate representation, as introduced in [Pipeline
+Architecture](#pipeline-architecture), is based on basic blocks and static
+single assignment. This means control flow is made up of blocks with lists of
+instructions and are terminated explicitly. Those instructions are, again, ssa
+based. This means every instruction produces exactly a single operation and is
+only defined once. 
+
+In rust type terms, this represents as:
+
+```rust
+pub struct Block<'b> {
+    // [...]
+    pub id: Id,
+    pub instructions: Vec<Instr<'b>>,
+    pub params: Vec<Id>,
+    pub term: Option<Terminator>,
+}
+
+pub struct Func<'f> {
+    pub name: &'f str,
+    pub id: Id,
+    pub ret: Option<Type>,
+    pub blocks: Vec<Block<'f>>,
+}
+```
+
+Thus in a human readable sense we get:
 
 ```text
 // entry
@@ -300,23 +369,446 @@ b4(%v2):
 }
 ```
 
+Lowering the AST to the IR requires allocation a list of blocks for each
+condition (`b1`), and a list of blocks for each body (`b2`), including the
+default body (`b3`). It also requires a joining block (`b4`).
+
+Each condition is lowered into its block and each body as well. All conditions
+followed by another condition are terminated by a `Terminator::Branch` jumping
+conditionally to its body or to the next condition. All bodies are terminated
+by `Terminator::Jump` to jump to the joining block:
+
+```rust
+pub struct Lower<'lower> {
+    functions: Vec<Func<'lower>>,
+    /// current function
+    func: Func<'lower>,
+    /// current block
+    block: Id,
+    id_store: IdStore,
+    /// maps ast variable names to ssa values
+    env: HashMap<&'lower str, Id>,
+    func_name_to_id: HashMap<&'lower str, Id>,
+    types: HashMap<usize, ptype::Type>,
+}
+
+impl<'lower> Lower<'lower> {
+    // [...]
+
+    fn lower_node(&mut self, node: &'lower Node) -> Result<Option<Id>, PgError> {
+        Ok(match node {
+            // [...]
+            Node::Match { cases, default, id } => {
+                let mut check_blocks = Vec::with_capacity(cases.len());
+                let mut body_blocks = Vec::with_capacity(cases.len());
+
+                // pre"allocating" bbs
+                for _ in cases {
+                    check_blocks.push(self.new_block());
+                    body_blocks.push(self.new_block());
+                }
+
+                let params = self.cur().params.clone();
+
+                let default_block = self.new_block();
+
+                // the single join block, merging all value results into a single branch
+                let join = self.new_block();
+
+                for (i, ((_, condition), body)) in cases.iter().enumerate() {
+                    self.switch_to_block(check_blocks[i]);
+                    let Some(cond) = self.lower_node(condition)? else {
+                        unreachable!(
+                            "Compiler bug, match cases MUST have a condition returning a value"
+                        );
+                    };
+
+                    let no_target = if i + 1 < cases.len() {
+                        check_blocks[i + 1]
+                    } else {
+                        default_block
+                    };
+
+                    let check_block_mut = self.block_mut(check_blocks[i]);
+                    check_block_mut.term = Some(Terminator::Branch {
+                        cond,
+                        yes: (body_blocks[i], params.clone()),
+                        no: (no_target, params.clone()),
+                    });
+                    check_block_mut.params = params.clone();
+
+                    self.switch_to_block(body_blocks[i]);
+                    self.block_mut(body_blocks[i]).params = params.clone();
+                    let mut last = None;
+                    for node in body {
+                        last = self.lower_node(node)?;
+                    }
+                    let value = last.expect("match body must produce value");
+
+                    self.block_mut(body_blocks[i]).term = Some(Terminator::Jump {
+                        id: join,
+                        params: vec![value],
+                    });
+                }
+
+                // the typechecker checked we have a default case, so this is safe
+                let (_, body) = default;
+                self.switch_to_block(default_block);
+                let mut last = None;
+                for node in body.iter() {
+                    last = self.lower_node(node)?;
+                }
+                let mut default_block = self.block_mut(default_block);
+                default_block.params = params;
+                let last = last.expect("match default must produce value");
+                default_block.term = Some(Terminator::Jump {
+                    id: join,
+                    params: vec![last],
+                });
+
+                self.switch_to_block(join);
+                self.block_mut(join).params = vec![last];
+                Some(last)
+            }
+        })
+    }
+}
+```
+
+`lower_node` is called by `Lower::ir_from`: Creating an entry point function,
+creating an entry block in this function and then lowering each node
+individually.
+
+```rust
+pub fn ir_from(mut self, ast: &'lower [Node]) -> Result<Vec<Func<'lower>>, PgError> {
+    // [...] typechecking
+
+    self.func = Func {
+        id: Id(0),
+        name: "entry",
+        ret: None,
+        blocks: vec![],
+    };
+    let entry = self.new_block();
+    self.switch_to_block(entry);
+
+    for node in ast {
+        let _ = &self.lower_node(node)?;
+        // reset to the main entry point block to keep emitting nodes into the correct conext
+        self.switch_to_block(entry);
+    }
+
+    self.functions.push(self.func);
+    Ok(self.functions)
+}
+```
+
 # Lowering to Bytecode
-<!-- TODO: -->
+
+```rust
+// as called in main()
+let mut cc = bc::Cc::new();
+if let Err(e) = cc.compile(&ir) {
+    let lines = str::from_utf8(&input)
+        .unwrap()
+        .lines()
+        .collect::<Vec<&str>>();
+    e.render(&lines);
+    std::process::exit(1);
+};
+```
+
+
+We can now use the IR blocks and generate bytecode for each block.
+
+```text
+// entry
+fn f0() -> void {
+b0():
+b1():
+        %v0:Bool = true
+        br %v0, b2(), b3()
+b2():
+        %v1:Int = 1
+        jmp b4(%v1)
+b3():
+        %v2:Int = 0
+        jmp b4(%v2)
+b4(%v2):
+}
+```
+
+I have annotated the resulting bytecode instruction disassembly with the
+corresponding immediate representations instruction:
 
 ```asm
 00000000 <entry>:
-  0000:    load_global r0, 1    ; true
-  0001:    jmpf r0, 3 <entry+0x1>
+; b1:
+           ; %v0:Bool = true
+  0000:    load_global r0, 1
+           ; br %v0, b2(), b3()
+  0001:    jmpf r0, 3 <entry+0x3>
   0002:    jmp 6 <entry+0x6>
+
+; b2:
+           ; %v1:Int = 1
   0003:    load_imm r1, #1
+           ; jmp b4(%v1)
   0004:    mov r2, r1
   0005:    jmp 8 <entry+0x8>
+
+; b3: 
+           ; %v2:Int = 0
   0006:    load_imm r2, #0
+           ; jmp b4(%v1)
   0007:    jmp 8 <entry+0x8>
 ```
 
+## Emitting functions and blocks
+
+Since the IRs root construct is a function containing blocks, the bytecode
+backend starts by iterating functions and blocks in functions. For each block
+it then emits bytecode for instructions and bytecode for terminators.
+
+```rust
+pub struct Cc<'cc> {
+    pub buf: Vec<Op>,
+    pub ctx: Context<'cc>,
+    /// binding a block id to its pc
+    block_map: HashMap<ir::Id, u16>,
+    /// prefilled block id to block
+    blocks: HashMap<ir::Id, &'cc ir::Block<'cc>>,
+}
+
+impl<'cc> Cc<'cc> {
+    // [...]
+
+    fn cc(&mut self, fun: &'cc Func<'cc>) 
+        -> Result<Option<reg::Reg>, PgError> {
+        // [...]
+        for block in &fun.blocks {
+            // [...]
+
+            for instruction in &block.instructions {
+                // emit bytecode for each instruction
+                self.instr(instruction);
+            }
+
+            // emit bytecode for each blocks terminator
+            self.term(block.term.as_ref());
+        }
+
+        // [...]
+    }
+}
+```
+
+## Emitting instructions
+
+
+Since in this example there is only `LoadConst` for `true`, `1` and `0`, there
+is a fairly uncomplicated implementation extract for `Cc::instr`.
+
+```rust
+// purple_garden::ir
+
+/// Compile time Value representation, used for interning and constant
+/// propagation
+pub enum Const<'c> {
+    False,
+    True,
+    Int(i64),
+    Double(u64),
+    Str(&'c str),
+}
+
+pub struct Id(pub u32);
+pub struct TypeId {
+    pub id: Id,
+    pub ty: Type,
+}
+pub enum Instr<'i> {
+    // [...]
+    LoadConst { dst: TypeId, value: Const<'i> },
+}
+```
+
+Since `LoadConst` is fully typechecked, emitting bytecode for it is a matter of
+checking if the constant is an integer and fits into `i32::MAX`, since the vm
+does have a `loadimm` instruction. 
+
+```rust
+// purple_garden::bc
+
+fn instr(&mut self, i: &ir::Instr<'cc>) {
+    match i {
+        ir::Instr::LoadConst { dst, value } => {
+            let TypeId {
+                id: ir::Id(dst), ..
+            } = dst;
+
+            match value {
+                Const::Int(i) if *i < i32::MAX as i64 => {
+                    self.emit(Op::LoadI {
+                        dst: *dst as u8,
+                        value: *i as i32,
+                    });
+                }
+                _ => {
+                    let idx = self.ctx.intern(*value);
+                    self.emit(Op::LoadG {
+                        dst: *dst as u8,
+                        idx,
+                    });
+                }
+            }
+        }
+    };
+}
+```
+
+All other constants are interned via `Context::intern`. Which just makes sure
+the virtual machines global pool doesnt include duplicate values.
+
+```rust
+pub struct Context<'ctx> {
+    // [...]
+    pub globals: HashMap<Const<'ctx>, usize>,
+    pub globals_vec: Vec<Const<'ctx>>,
+}
+
+impl<'ctx> Context<'ctx> {
+    pub fn intern(&mut self, constant: Const<'ctx>) -> u32 {
+        if let Some(&idx) = self.globals.get(&constant) {
+            return idx as u32;
+        }
+
+        let idx = self.globals_vec.len();
+        self.globals_vec.push(constant);
+        self.globals.insert(constant, idx);
+        idx as u32
+    }
+}
+```
+
+So for our instructions:
+
+```text
+%v0:Bool = true
+%v1:Int = 1
+%v2:Int = 0
+```
+
+Compiles to this bytecode:
+
+```asm
+load_global r0, 1
+load_imm r1, #1
+load_imm r2, #0
+```
+
+## Emitting terminators
+
+Same as before, simply for another immediate representation construct:
+
+```rust
+pub enum Terminator {
+    // [...]
+    Jump {
+        id: Id,
+        params: Vec<Id>,
+    },
+    Branch {
+        cond: Id,
+        yes: (Id, Vec<Id>),
+        no: (Id, Vec<Id>),
+    },
+}
+```
+
+This maps to bytecode as well as the instructions, but with a bit of a preamble
+for the params for each.
+
+```rust
+fn term(&mut self, t: Option<&ir::Terminator>) {
+    let Some(term) = t else {
+        return;
+    };
+
+    match term {
+        // [...]
+        ir::Terminator::Jump { id, params } => {
+            let target = *self.blocks.get(id).unwrap();
+            for (i, param) in params.iter().enumerate() {
+                let ir::Id(src) = param;
+                let ir::Id(dst) = target.params[i];
+
+                if *src == dst {
+                    continue;
+                }
+
+                self.emit(Op::Mov {
+                    dst: dst as u8,
+                    src: *src as u8,
+                });
+            }
+
+            let ir::Id(id) = id;
+            self.emit(Op::Jmp { target: *id as u16 });
+        }
+        ir::Terminator::Branch {
+            cond,
+            yes: (yes, yes_params),
+            no: (no, no_params),
+            ..
+        } => {
+            let target = *self.blocks.get(yes).unwrap();
+            for (i, param) in yes_params.iter().enumerate() {
+                let ir::Id(src) = param;
+                let ir::Id(dst) = target.params[i];
+
+                if *src == dst {
+                    continue;
+                }
+
+                self.emit(Op::Mov {
+                    dst: dst as u8,
+                    src: *src as u8,
+                });
+            }
+
+            let ir::Id(cond) = cond;
+            self.emit(Op::JmpF {
+                cond: *cond as u8,
+                target: yes.0 as u16,
+            });
+
+            let target = self.blocks[no];
+            for (i, param) in no_params.iter().enumerate() {
+                let ir::Id(src) = param;
+                let ir::Id(dst) = target.params[i];
+
+                if *src == dst {
+                    continue;
+                }
+
+                self.emit(Op::Mov {
+                    dst: dst as u8,
+                    src: *src as u8,
+                });
+            }
+
+            self.emit(Op::Jmp {
+                target: no.0 as u16,
+            });
+        }
+    }
+}
+```
+
 # Real example: factorial
-<!-- TODO: -->
+
+<!-- TODO: text here -->
 
 ```python
 fn factorial(n:int a:int) int {
@@ -398,6 +890,11 @@ b0():
 
 # Optimisations
 
+There are a lot of low hanging fruit in these examples (useless / noop blocks,
+function call in tailcall position, unnecessary moves), this chapter glosses
+over concepts, implementation and effects for some of them, for instance
+`indirect_jump` and `tailcall`:
+
 ```rust
 // purple_garden::opt
 
@@ -408,6 +905,10 @@ pub fn ir(ir: &mut [crate::ir::Func]) {
     }
 }
 ```
+
+Similar to the peephole optimisations I did
+[previously](https://xnacly.me/posts/2026/purple-garden-first-optimisations/),
+the ir optimisations are also guarded behind `-O1`:
 
 ```rust
 fn main() {
@@ -423,8 +924,8 @@ fn main() {
 
 ## Removing Useless Blocks
 
-The `indirect_jump` optimisation removes blocks that do nothing except
-terminate into another block, for instance `b2` in `factorial`:
+The `indirect_jump` optimisation removes blocks doing nothing except terminate
+into another block, for instance `b2` in `factorial`:
 
 ```text
 fn f1(%v0, %v1) -> Int {
@@ -455,11 +956,6 @@ Thus it can be fully omited, requiring the branch terminator pointing to `b2`
 to point instead to `b4`:
 
 ```diff
-diff --git a/base b/opt
-index acd9cae..7f1ecab 100644
---- a/base
-+++ b/opt
-@@ -4,9 +4,9 @@ b0(%v0, %v1):
  b1(%v0, %v1):
          %v2:Int = 0
          %v3:Bool = eq %v0, %v2
@@ -477,7 +973,20 @@ The tombstone is a marker for the codegen backends to skip generating code for
 a 'dead' block and enables stable block ids, which are useful for codegen and
 further optimisations on alive blocks.
 
-```rust
+
+```diff
+// purple_garden::ir
+pub struct Block<'b> {
++   /// block is dead as a result of optimisation passes
++   pub tombstone: bool,
+    pub id: Id,
+    pub instructions: Vec<Instr<'b>>,
+    pub params: Vec<Id>,
+    pub term: Option<Terminator>,
+}
+```
+
+```diff
 // purple_garden::bc
 impl<'cc> Cc<'cc> {
     fn cc(&mut self, fun: &'cc Func<'cc>) 
@@ -485,12 +994,64 @@ impl<'cc> Cc<'cc> {
         // [...] prep
 
         for block in &fun.blocks {
-            if block.tombstone {
-                continue;
-            }
++           if block.tombstone {
++               continue;
++           }
 
             // [...] codegen
         }
+}
+```
+
+Here is where rust shines, a pretty pattern match on a blocks terminator,
+extracting its targets and parameters. Pattern matching again, this time on the
+edges of the terminator (fancy speak for the terminators), to check if they are
+in indirect jumping positions and then rewriting either yes or no, or both if
+any of the target blocks are.
+
+```rust
+pub fn indirect_jump(fun: &mut ir::Func) {
+    for i in 0..fun.blocks.len() {
+        let Some(ir::Terminator::Branch {
+            cond,
+            yes: (ir::Id(yes), yes_params),
+            no: (ir::Id(no), no_params),
+            ..
+        }) = fun.blocks[i].term.clone()
+        else {
+            continue;
+        };
+
+        let yes_target = &mut fun.blocks[yes as usize];
+        let yes_edge = if yes_target.instructions.is_empty() {
+            if let Some(ir::Terminator::Jump { id, params }) = &yes_target.term {
+                yes_target.tombstone = true;
+                Some((*id, params.clone()))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let no_target = &mut fun.blocks[no as usize];
+        let no_edge = if no_target.instructions.is_empty() {
+            if let Some(ir::Terminator::Jump { id, params }) = &no_target.term {
+                no_target.tombstone = true;
+                Some((*id, params.clone()))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        fun.blocks[i].term = Some(ir::Terminator::Branch {
+            cond,
+            yes: yes_edge.unwrap_or((ir::Id(yes), yes_params)),
+            no: no_edge.unwrap_or((ir::Id(no), no_params)),
+        });
+    }
 }
 ```
 
