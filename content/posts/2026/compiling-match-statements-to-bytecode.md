@@ -3,6 +3,7 @@ title: "Compiling Match Statements to Bytecode"
 summary: "Full pipeline deep dive for purple garden: AST, BB SSA IR, Bytecode, Optimisations"
 date: 2026-02-26T15:13:56+01:00
 draft: true
+math: true
 tags:
 - rust
 - pldev
@@ -70,6 +71,9 @@ targeting the typed register based virtula machine is implemented). This
 architecture enables decoupled codegen and a list of optimisations.
 
 # Parsing
+
+Parsing consumes the tokens produced by the lexical analysis / tokenisation and
+builds a tree representing the source code as a concept.
 
 ```rust
 // as called in main()
@@ -505,6 +509,9 @@ pub fn ir_from(mut self, ast: &'lower [Node]) -> Result<Vec<Func<'lower>>, PgErr
 
 # Lowering to Bytecode
 
+Lowering the immediate representation to bytecode the virtual machine can
+execute works on a function by function and block by block basis.
+
 ```rust
 // as called in main()
 let mut cc = bc::Cc::new();
@@ -542,9 +549,11 @@ I have annotated the resulting bytecode instruction disassembly with the
 corresponding immediate representations instruction:
 
 ```asm
+globals:
+  0000:    true
+
 00000000 <entry>:
 ; b1:
-           ; %v0:Bool = true
   0000:    load_global r0, 1
            ; br %v0, b2(), b3()
   0001:    jmpf r0, 3 <entry+0x3>
@@ -684,7 +693,14 @@ impl<'ctx> Context<'ctx> {
         }
 
         let idx = self.globals_vec.len();
-        self.globals_vec.push(constant);
+        if let Const::Str(str) = constant {
+            let str_pool_idx = self.strings_vec.len() as i64;
+            self.strings_vec.push(str);
+            self.globals_vec.push(Const::Int(str_pool_idx));
+        } else {
+            self.globals_vec.push(constant);
+        };
+
         self.globals.insert(constant, idx);
         idx as u32
     }
@@ -806,9 +822,21 @@ fn term(&mut self, t: Option<&ir::Terminator>) {
 }
 ```
 
-# Real example: factorial
+# Real, but easy, example: factorial
 
-<!-- TODO: text here -->
+[Factorial](https://en.wikipedia.org/wiki/Factorial) is easy enough to reason about, implement, and its recursive, which
+is nice to debug backtracing and some other vm features:
+
+$$
+n! := \begin{cases}
+1 & \textrm{if } n = 0 \\
+n \cdot (n-1)! & \textrm{if } n >= 1
+\end{cases}
+$$
+
+I "only" want to compute the first 20 values, since purple gardens integers are
+represented as i64, so the largest fitting factorial is
+`2,432,902,008,176,640,000`, corresponding to 20.
 
 ```python
 fn factorial(n:int a:int) int {
@@ -817,21 +845,20 @@ fn factorial(n:int a:int) int {
         { factorial(n-1 n*a) }
     }
 }
-factorial(16 1)
+factorial(20 1)
 ```
 
+The corresponding AST amounts to:
+
 ```lisp
-(fn factorial (n:Int a:Int)
+(fn factorial (n:int a:int)
   (match
-   ((DoubleEqual n I("0")) a)
-   ((factorial 
-       (Minus n I("1"))
-      (Asteriks n a)
-    ))
-   )
-  )->Int
-(factorial I("16") I("1"))
+   ((== n 0) a)
+   ((factorial (- n 1) (* n a)))))->int
+(factorial 20 1)
 ```
+
+Lowered to the immediate representation as:
 
 ```text
 // factorial
@@ -856,11 +883,13 @@ b4(%v7):
 // entry
 fn f0() -> void {
 b0():
-        %v0:Int = 16
+        %v0:Int = 20
         %v1:Int = 1
         %v2 = f1(%v0, %v1)
 }
 ```
+
+Again, lowered to bytecode, results in:
 
 ```asm
 00000000 <factorial>:
@@ -882,10 +911,28 @@ b0():
   000f:    ret
 
 00000010 <entry>:
-  0010:    load_imm r0, #16
+  0010:    load_imm r0, #20
   0011:    load_imm r1, #1
   0012:    call 0 <factorial>
   0013:    mov r2, r0
+```
+
+Adding `dbg!(vm.r[0].as_int());` to the main after `vm.run()`, shows the
+correct output:
+
+```text
+[src/main.rs:265:5] vm.r[0].as_int() = 2432902008176640000
+```
+
+Compiling with release options and stuff results in a fairly quick pipeline
+(~700 microseconds), but thats just a micro benchmark for a uselessly simple
+function:
+
+```text
+$ hyperfine "./target/release/purple-garden f.garden" -N --warmup 10
+Benchmark 1: ./target/release/purple-garden f.garden
+  Time (mean ± σ):     703.6 µs ±  28.5 µs    [User: 296.2 µs, System: 354.1 µs]
+  Range (min … max):   657.1 µs … 944.7 µs    3630 runs
 ```
 
 # Optimisations
@@ -1055,26 +1102,31 @@ pub fn indirect_jump(fun: &mut ir::Func) {
 }
 ```
 
-## Tail call optimisation
+## Tail call optimisation (FUTURE)
 
 Since factorial with an accumulator is embarrassingly
-[tailcallable](https://en.wikipedia.org/wiki/Tail_call)[^1], we need a pass to make
-it.
+[tailcallable](https://en.wikipedia.org/wiki/Tail_call)[^1], we need a pass to
+make it. This is the subject for the next blog article.
 
-<!-- TODO: show pass -->
-<!-- TODO: show fN_tail IR instead of fN -->
-<!-- TODO: show bytecode result -->
+## Smarter register usage (FUTURE)
 
-With an even more fun example:
+In our `factorial` example there are a few obvious cases in which instructions
+could write to registers directly instead of writing to temporary registers and
+moving their results to the respective register afterwards: 
 
-```python
-fn killstack(n:int) int {
-    match {
-        n < 1000000 { killstack(n+1) }
-        { 0 }
-    }
-}
-killstack(1)
+```asm
+  0007:    sub r5, r0, r4
+  0008:    mul r6, r0, r1
+  0009:    mov r0, r5
+  000a:    mov r1, r6
+```
+
+And also unnecessary moves upon crossing block boundaries:
+
+```asm
+  000c:    mov r7, r0
+  000d:    jmp 14 <factorial+0xE>
+  000e:    mov r0, r7
 ```
 
 [^1]: It even is THE example when looking into LLVMs tailcall pass: https://gist.github.com/vzyrianov/19cad1d2fdc2178c018d79ab6cd4ef10#examples
