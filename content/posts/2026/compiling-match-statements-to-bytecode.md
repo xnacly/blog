@@ -2,7 +2,6 @@
 title: "Compiling Match Statements to Bytecode"
 summary: "Full pipeline deep dive for purple garden: AST, BB SSA IR, Bytecode, Optimisations"
 date: 2026-02-26T15:13:56+01:00
-draft: true
 math: true
 tags:
 - rust
@@ -1106,7 +1105,9 @@ pub fn indirect_jump(fun: &mut ir::Func) {
 
 Since factorial with an accumulator is embarrassingly
 [tailcallable](https://en.wikipedia.org/wiki/Tail_call)[^1], we need a pass to
-make it. This is the subject for the next blog article.
+make it. 
+
+This and the below section subject for the next blog article.
 
 ## Smarter register usage (FUTURE)
 
