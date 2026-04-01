@@ -125,6 +125,13 @@ nav:not(#TableOfContents) {
 
     h3 {
       margin: 0;
+      a:before {
+        content: "" !important;
+      }
+
+      a:after {
+        content: "" !important;
+      }
     }
 
     h3.draft a {
@@ -250,7 +257,7 @@ nav:not(#TableOfContents) {
       padding-bottom: calc(var(--spacing) / 4);
 
       code {
-          color: unset;
+        color: unset;
       }
     }
 
@@ -283,7 +290,6 @@ nav:not(#TableOfContents) {
     blockquote {
       padding-top: var(--spacing);
     }
-
 
     #callout.Tip {
       border-color: var(--tip);
@@ -456,6 +462,17 @@ details[open] summary::before {
       }
     }
   }
+
+  .home {
+    .article .heading {
+      display: flex;
+      flex-direction: column-reverse;
+
+      h3 {
+        font-size: 13pt;
+      }
+    }
+  }
 }
 
 @media only screen and (max-width: 1600px) {
@@ -528,7 +545,6 @@ details[open] summary::before {
   font-display: swap;
   src: url("/fonts/MapleMono-NF-ExtraBold.ttf") format("truetype");
 }
-
 
 @font-face {
   font-family: "MapleMono NF";
