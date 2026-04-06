@@ -1,0 +1,514 @@
+---
+title: "Revisiting and Optimising go-iso8601-duration"
+summary: "5.33x faster runtime due to zero allocations, less calls and better assumptions"
+date: 2026-04-06
+draft: true
+tags:
+    - go
+---
+
+
+While looking through my repos, an issue in
+[go-iso8601-duration](https://github.com/xnacly/go-iso8601-duration), which I
+previously missed, popped up, informing me of a missing license in the last
+release, resulting in missing documentation for the v1.1.0 release (Since the
+gopkg website doesnt render documentation for non licensed projects).
+
+Since I had to do a new release either way, I took the opportunity and
+benchmarked the current state. -go/)).
+
+# Benchmarks and a Baseline
+
+I reused the cases previously employed for checking each branch of the FSM to
+establish some micro benchmarks. But then again how do you not micro benchmark
+a duration parsing routine (I tried my best). For the FSM and a rant about the
+ISO org,  see my previous article: [Handrolling ISO8601 Duration Support for
+Go](https://xnacly.me/posts/2025/handrolling-iso8601-support-for-go)
+
+```go
+var testcases = []struct {
+	str string
+	dur Duration
+}{
+	{"P0D", Duration{}},
+	{"PT15H", Duration{hour: 15}},
+	{"P1W", Duration{week: 1}},
+	{"P15W", Duration{week: 15}},
+	{"P1Y15W", Duration{year: 1, week: 15}},
+	{"P15Y", Duration{year: 15}},
+	{"P15Y3M", Duration{year: 15, month: 3}},
+	{"P15Y3M41D", Duration{year: 15, month: 3, day: 41}},
+	{"PT15M", Duration{minute: 15}},
+	{"PT15M10S", Duration{minute: 15, second: 10}},
+	{
+		"P3Y6M4DT12H30M5S",
+		Duration{
+			year:   3,
+			month:  6,
+			day:    4,
+			hour:   12,
+			minute: 30,
+			second: 5,
+		},
+	},
+}
+
+func BenchmarkDuration(b *testing.B) {
+	for _, i := range testcases {
+		b.Run(i.str, func(b *testing.B) {
+			for n := 0; n < b.N; n++ {
+				_, _ = From(i.str)
+			}
+		})
+	}
+}
+```
+
+```text
+goos: linux
+goarch: amd64
+pkg: github.com/xnacly/go-iso8601-duration
+cpu: AMD Ryzen 7 3700X 8-Core Processor
+BenchmarkDuration/P0D-16                24741985                48.10 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/PT15H-16              18533790                63.26 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/P1W-16                24164163                48.64 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/P15W-16               20793126                58.09 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/P1Y15W-16             13904265                84.21 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/P15Y-16               19943671                59.35 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/P15Y3M-16             14227842                83.24 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/P15Y3M41D-16          10262575                115.6 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/PT15M-16              18228138                63.90 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/PT15M10S-16           12289743                95.84 ns/op            8 B/op          1 allocs/op
+BenchmarkDuration/P3Y6M4DT12H30M5S-16   6758479                 177.3 ns/op            8 B/op          1 allocs/op
+PASS
+ok      github.com/xnacly/go-iso8601-duration   13.952s
+```
+
+# Replacing the numBuffer with a running int64
+
+The first weird detail I noticed, was previous me using `bytes.Buffer` to store
+the single characters making up the numbers for parsing the numeric value of
+each designator, for instance `593` in `P593W`, when a running `int64`  would
+suffice. 
+
+```go{hl_lines=[13,16,19,24]}
+func From(s string) (Duration, error) {
+	var duration Duration
+    curState := stateStart
+    var col uint8
+    numBuf := *bytes.NewBuffer(make([]byte, 0, 8))
+
+	for {
+        // ...
+        switch curState {
+        // ...
+		case stateTNumber:
+			if unicode.IsDigit(b) {
+				numBuf.WriteRune(b)
+				curState = stateTNumber
+			} else if strings.ContainsRune(timeDesignators, b) {
+				if numBuf.Len() == 0 {
+					return duration, wrapErr(MissingNumber, col)
+				}
+				num, err := numBufferToNumber(numBuf)
+				if err != nil {
+					return duration, err
+				}
+                // using the number
+				numBuf.Reset()
+				curState = stateTDesignator
+			} else {
+				return duration, wrapErr(UnknownDesignator, col)
+			}
+        }
+    }
+}
+```
+
+Especially since the `byte.Buffer` interactions require multiple
+function calls for writing, a call for reading and allocations for the
+underlying buffer, while the final number parsing itself in `numBufferToNum`
+forming a second pass of the integer characters. 
+
+```go{hl_lines=3}
+func numBufferToNumber(buf bytes.Buffer) (int64, error) {
+	var i int64
+	for _, n := range buf.Bytes() {
+		digit := int64(n - '0')
+		if i > (math.MaxInt64-digit)/10 {
+			return 0, DesignatorNumberTooLarge
+		}
+		i = (i * 10) + digit
+	}
+
+	return i, nil
+}
+```
+
+For this problem, all of this is totally unnecessary and can
+be fused into a running `int64` temporary value, updating
+value on seeing numeric bytes and then using the integer
+when creating the designators field of the
+`goiso8601duration.Duration` struct:
+
+```diff
+diff --git a/duration.go b/duration.go
+index 80a3b4c..4506457 100644
+--- a/duration.go
++++ b/duration.go
+@@ -128,7 +128,8 @@ func From(s string) (Duration, error) {
+ 
+ 	curState := stateStart
+ 	var col uint8
+-	numBuf := *bytes.NewBuffer(make([]byte, 0, 8))
++	var num int64
++	var hasNum bool
+ 	r := strings.NewReader(s)
+ 
+ 	for {
+@@ -171,23 +172,25 @@ func From(s string) (Duration, error) {
+ 			if b == 'T' {
+ 				curState = stateT
+ 			} else if unicode.IsDigit(b) {
+-				numBuf.WriteRune(b)
++				num = (num * 10) + int64(b-'0')
++				hasNum = true
+ 				curState = stateNumber
+ 			} else {
+ 				return duration, wrapErr(MissingNumber, col)
+ 			}
+ 		case stateNumber:
+ 			if unicode.IsDigit(b) {
+-				numBuf.WriteRune(b)
++				digit := int64(b - '0')
++				if num > (math.MaxInt64-digit)/10 {
++					return duration, DesignatorNumberTooLarge
++				}
++				num = (num * 10) + digit
++				hasNum = true
+ 				curState = stateNumber
+ 			} else if strings.ContainsRune(defaultDesignators, b) {
+-				if numBuf.Len() == 0 {
++				if !hasNum {
+ 					return duration, wrapErr(MissingNumber, col)
+ 				}
+-				num, err := numBufferToNumber(numBuf)
+-				if err != nil {
+-					return duration, err
+-				}
+ 				switch b {
+ 				case 'Y':
+ 					if duration.year != 0 {
+@@ -210,30 +213,36 @@ func From(s string) (Duration, error) {
+ 					}
+ 					duration.day = num
+ 				}
+-				numBuf.Reset()
++				num = 0
+ 				curState = stateDesignator
+ 			} else {
+ 				return duration, wrapErr(UnknownDesignator, col)
+ 			}
+ 		case stateT, stateTDesignator:
+ 			if unicode.IsDigit(b) {
+-				numBuf.WriteRune(b)
++				digit := int64(b - '0')
++				if num > (math.MaxInt64-digit)/10 {
++					return duration, DesignatorNumberTooLarge
++				}
++				num = (num * 10) + digit
++				hasNum = true
+ 				curState = stateTNumber
+ 			} else {
+ 				return duration, wrapErr(MissingNumber, col)
+ 			}
+ 		case stateTNumber:
+ 			if unicode.IsDigit(b) {
+-				numBuf.WriteRune(b)
++				digit := int64(b - '0')
++				if num > (math.MaxInt64-digit)/10 {
++					return duration, DesignatorNumberTooLarge
++				}
++				num = (num * 10) + digit
++				hasNum = true
+ 				curState = stateTNumber
+ 			} else if strings.ContainsRune(timeDesignators, b) {
+-				if numBuf.Len() == 0 {
++				if !hasNum {
+ 					return duration, wrapErr(MissingNumber, col)
+ 				}
+-				num, err := numBufferToNumber(numBuf)
+-				if err != nil {
+-					return duration, err
+-				}
+ 				switch b {
+ 				case 'H':
+ 					if duration.hour != 0 {
+@@ -251,7 +260,7 @@ func From(s string) (Duration, error) {
+ 					}
+ 					duration.second = num
+ 				}
+-				numBuf.Reset()
++				num = 0
+ 				curState = stateTDesignator
+ 			} else {
+ 				return duration, wrapErr(UnknownDesignator, col)
+```
+
+The above diff shows:
+
+1. Parsing number via `num` while iterating (no more second pass numeric parsing)
+2. Overflow checks, analog to the previous version, returing `DesignatorNumberTooLarge` on occurrence
+3. No more calls to `numBuf.{WriteRune,Reset,Bytes}` in the hotpath, or anywhere
+4. No allocations anymore
+
+Benchmarks show an average improvement of ~45%:
+
+```text
+goos: linux
+goarch: amd64
+pkg: github.com/xnacly/go-iso8601-duration
+cpu: AMD Ryzen 7 3700X 8-Core Processor
+BenchmarkDuration/P0D-16                45560650                25.55 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15H-16              34413621                35.08 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P1W-16                46468417                25.84 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15W-16               37708790                31.77 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P1Y15W-16             26145358                45.38 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y-16               37434289                31.84 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y3M-16             26251488                45.27 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y3M41D-16          18727663                63.59 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15M-16              33159258                35.16 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15M10S-16           21954288                53.80 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P3Y6M4DT12H30M5S-16   10706078                111.9 ns/op            0 B/op          0 allocs/op
+PASS
+ok      github.com/xnacly/go-iso8601-duration   13.605s
+```
+
+# Throwing unicode.IsDigit away for '0' <= b && b >= '9'
+
+The least impactful change is inlining `unicode.IsDigit`,
+but only the ascii (<= MaxLatin1) portion, since the filter
+out the non-ascii inputs.
+
+```go
+package unicode
+
+// IsDigit reports whether the rune is a decimal digit.
+func IsDigit(r rune) bool {
+	if r <= MaxLatin1 {
+		return '0' <= r && r <= '9'
+	}
+	return isExcludingLatin(Digit, r)
+}
+```
+
+This change results in ~6% faster runtime:
+
+```text
+goos: linux
+goarch: amd64
+pkg: github.com/xnacly/go-iso8601-duration
+cpu: AMD Ryzen 7 3700X 8-Core Processor
+BenchmarkDuration/P0D-16                47473572                24.55 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15H-16              35477791                32.96 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P1W-16                48368948                24.96 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15W-16               40997600                29.37 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P1Y15W-16             28936015                41.42 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y-16               39383282                30.27 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y3M-16             27719198                42.48 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y3M41D-16          20594792                58.53 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15M-16              34655841                33.56 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15M10S-16           24108157                50.88 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P3Y6M4DT12H30M5S-16   11649555               102.50 ns/op             0 B/op          0 allocs/op
+PASS
+ok      github.com/xnacly/go-iso8601-duration   13.601s
+```
+
+
+# Replacing strings.Reader with for-range rune iteration
+
+```text
+go test ./... -bench=. -cpuprofile=cpu
+go tool pprof -http :8080 cpu
+```
+
+![flamegraph1](/revisiting-goiso8601duration/flamegraph1.png)
+
+While the next section targets `strings.ContainsRune`, this section focuses on
+`strings.(*Reader).ReadRune`. Specifically requesting a new rune.
+
+```go
+for {
+    b, size, err := r.ReadRune()
+    if err != nil {
+        if err != io.EOF {
+            return duration, wrapErr(UnexpectedReaderError, col)
+        } else {
+            // other error handling here
+        }
+    }
+    if size > 1 {
+        return duration, wrapErr(UnexpectedNonAsciiRune, col)
+    }
+    col++
+
+    switch curState {
+     // ...
+    }
+}
+```
+
+Each iteration requires a `ReadRune` call, multiple branches
+for error handling and ascii checking, since i want to error
+on non ascii inputs.
+
+This is simply not necessary, since I can iterate over the
+runes of the input string using a for-range loop, check for
+ascii validity with `r <= unicode.MaxASCII`:
+
+```diff
+diff --git a/duration.go b/duration.go
+index e4083bb..52eec76 100644
+--- a/duration.go
++++ b/duration.go
+@@ -2,11 +2,11 @@ package goiso8601duration
+ 
+ import (
+ 	"encoding/json"
+-	"io"
+ 	"math"
+ 	"strconv"
+ 	"strings"
+ 	"time"
++	"unicode"
+ )
+ 
+ // constants for roundtripping between time.Duration and Duration
+@@ -112,33 +112,13 @@ func From(s string) (Duration, error) {
+ 	}
+ 
+ 	curState := stateStart
+-	var col uint8
+ 	var num int64
+ 	var hasNum bool
+-	r := strings.NewReader(s)
+-
+-	for {
+-		b, size, err := r.ReadRune()
+-		if err != nil {
+-			if err != io.EOF {
+-				return duration, wrapErr(UnexpectedReaderError, col)
+-			} else if curState == stateP {
+-				// being in stateP at the end (io.EOF) means we havent
+-				// encountered anything after the P, so there were no numbers
+-				// or states
+-				return duration, wrapErr(UnexpectedEof, col)
+-			} else if curState == stateNumber || curState == stateTNumber {
+-				// if we are in the state of Number or TNumber we had a number
+-				// but no designator at the end
+-				return duration, wrapErr(MissingDesignator, col)
+-			} else {
+-				curState = stateFin
+-			}
+-		}
+-		if size > 1 {
++
++	for col, b := range s {
++		if b > unicode.MaxASCII {
+ 			return duration, wrapErr(UnexpectedNonAsciiRune, col)
+ 		}
+-		col++
+ 
+ 		switch curState {
+ 		case stateStart:
+@@ -254,6 +234,19 @@ func From(s string) (Duration, error) {
+ 			return duration, nil
+ 		}
+ 	}
++
++	if curState == stateP {
++		// being in stateP at the end (io.EOF) means we havent
++		// encountered anything after the P, so there were no numbers
++		// or states
++		return duration, wrapErr(UnexpectedEof, len(s))
++	} else if curState == stateNumber || curState == stateTNumber {
++		// if we are in the state of Number or TNumber we had a number
++		// but no designator at the end
++		return duration, wrapErr(MissingDesignator, len(s))
++	} else {
++		return duration, nil
++	}
+ }
+ 
+ func (i Duration) Apply(t time.Time) time.Time {
+```
+
+Thus reducing the hot path complexity by multiple function calls, branches and
+the bullshit `strings.(*Reader).ReadRune` does:
+
+```go
+package strings
+
+// ReadRune implements the [io.RuneReader] interface.
+func (r *Reader) ReadRune() (ch rune, size int, err error) {
+	if r.i >= int64(len(r.s)) {
+		r.prevRune = -1
+		return 0, 0, io.EOF
+	}
+	r.prevRune = int(r.i)
+	ch, size = utf8.DecodeRuneInString(r.s[r.i:])
+	r.i += int64(size)
+	return
+}
+```
+
+These changes result in ~38% runtime reduction:
+
+```text
+goos: linux
+goarch: amd64
+pkg: github.com/xnacly/go-iso8601-duration
+cpu: AMD Ryzen 7 3700X 8-Core Processor
+BenchmarkDuration/P0D-16                71080273                16.55 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15H-16              59493799                19.94 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P1W-16                70588683                16.73 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15W-16               62168469                18.98 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P1Y15W-16             43747168                28.85 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y-16               63284880                19.99 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y3M-16             38357061                29.42 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y3M41D-16          28748721                41.85 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15M-16              53639156                20.78 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15M10S-16           37592148                31.97 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P3Y6M4DT12H30M5S-16   16793139                71.17 ns/op            0 B/op          0 allocs/op
+PASS
+ok      github.com/xnacly/go-iso8601-duration   13.434s
+```
+
+# Removing duplicate Branching in Designator validitiy checks
+
+Lets look at the flamegraph again:
+
+![flamegraph2](/revisiting-goiso8601duration/flamegraph2.png)
+
+Shows `strings.ContainsRune`, the target of the next section). The previous
+implementation employed a duplicate check for making sure non numeric chars
+found, match the expected characters at a given FSM state:
+
+```go
+```
+
+# Highlighting Improvements
+
+| Benchmark        | Baseline (ns) | Improved (ns) | delta (ns) | % Faster | Speedup (x) |
+| ---------------- | ------------- | ------------- | ---------- | -------- | ----------- |
+| P0D              | 64.26         | 10.51         | -53.75     | 83.6%    | 6.11x       |
+| PT15H            | 76.69         | 14.58         | -62.11     | 81.0%    | 5.26x       |
+| P1W              | 64.10         | 10.33         | -53.77     | 83.9%    | 6.21x       |
+| P15W             | 74.35         | 12.75         | -61.60     | 82.9%    | 5.83x       |
+| P1Y15W           | 95.39         | 17.19         | -78.20     | 82.0%    | 5.55x       |
+| P15Y             | 74.44         | 12.75         | -61.69     | 82.9%    | 5.84x       |
+| P15Y3M           | 96.33         | 18.65         | -77.68     | 80.7%    | 5.16x       |
+| P15Y3M41D        | 123.7         | 25.45         | -98.25     | 79.4%    | 4.86x       |
+| PT15M            | 76.61         | 14.98         | -61.63     | 80.4%    | 5.11x       |
+| PT15M10S         | 104.8         | 22.14         | -82.66     | 78.9%    | 4.73x       |
+| P3Y6M4DT12H30M5S | 188.7         | 46.99         | -141.71    | 75.1%    | 4.02x       |
