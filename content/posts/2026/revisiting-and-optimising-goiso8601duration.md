@@ -511,7 +511,7 @@ Before
 109        320ms      320ms           		if b > unicode.MaxASCII { 
 ```
 
-Replacing this with a byte case and thus omitting the MaxASCII check:
+Replacing this with a []byte cast and thus omitting the MaxASCII check:
 
 ```diff
 diff --git a/duration.go b/duration.go
@@ -568,6 +568,107 @@ BenchmarkDuration/P3Y6M4DT12H30M5S-16   28636116                42.47 ns/op     
 PASS
 ok      github.com/xnacly/go-iso8601-duration   14.860s
 ```
+
+This is easily explainable when looking at the assembly output. While `for col, r := range s` compiles to:
+
+{{<rawhtml>}}
+<iframe width="800px" height="400px" src="https://godbolt.org/e#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:go,selection:(endColumn:25,endLineNumber:6,positionColumn:25,positionLineNumber:6,selectionStartColumn:25,selectionStartLineNumber:6,startColumn:25,startLineNumber:6),source:'//+Type+your+code+here,+or+load+an+example.%0Apackage+p%0A%0Afunc+run(s+string)+int+%7B%0A++++runningResult+:%3D+0%0A++++for+col,+r+:%3D+range+s+%7B%0A++++++++runningResult+%2B%3D+int(r)+%2B+col%0A++++%7D%0A++++return+runningResult%0A%7D%0A'),l:'5',n:'0',o:'Go+source+%231',t:'0')),k:48.22469528351881,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((h:compiler,i:(compiler:gl1260,filters:(b:'0',binary:'1',binaryObject:'1',commentOnly:'0',debugCalls:'1',demangle:'0',directives:'0',execute:'1',intel:'0',libraryCode:'0',trim:'1',verboseDemangling:'0'),flagsViewOpen:'1',fontScale:14,fontUsePx:'0',j:1,lang:go,libs:!(),options:'',overrides:!(),selection:(endColumn:54,endLineNumber:35,positionColumn:54,positionLineNumber:35,selectionStartColumn:54,selectionStartLineNumber:35,startColumn:54,startLineNumber:35),source:1),l:'5',n:'0',o:'+x86-64+gc+1.26.0+(Editor+%231)',t:'0')),k:51.77530471648117,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"></iframe>
+{{</rawhtml>}}
+
+`for col, r := range []byte(s)` compiles to a third of the instructions:
+
+{{<rawhtml>}}
+<iframe width="800px" height="400px" src="https://godbolt.org/e#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:go,selection:(endColumn:1,endLineNumber:11,positionColumn:1,positionLineNumber:11,selectionStartColumn:1,selectionStartLineNumber:11,startColumn:1,startLineNumber:11),source:'//+Type+your+code+here,+or+load+an+example.%0Apackage+p%0A%0Afunc+run(s+string)+int+%7B%0A++++runningResult+:%3D+0%0A++++for+col,+r+:%3D+range+%5B%5Dbyte(s)+%7B%0A++++++++runningResult+%2B%3D+int(r)+%2B+col%0A++++%7D%0A++++return+runningResult%0A%7D%0A'),l:'5',n:'0',o:'Go+source+%231',t:'0')),k:48.22469528351881,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((h:compiler,i:(compiler:gl1260,filters:(b:'0',binary:'1',binaryObject:'1',commentOnly:'0',debugCalls:'1',demangle:'0',directives:'0',execute:'1',intel:'0',libraryCode:'0',trim:'1',verboseDemangling:'0'),flagsViewOpen:'1',fontScale:14,fontUsePx:'0',j:1,lang:go,libs:!(),options:'',overrides:!(),selection:(endColumn:1,endLineNumber:1,positionColumn:1,positionLineNumber:1,selectionStartColumn:1,selectionStartLineNumber:1,startColumn:1,startLineNumber:1),source:1),l:'5',n:'0',o:'+x86-64+gc+1.26.0+(Editor+%231)',t:'0')),k:51.77530471648117,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"></iframe>
+{{</rawhtml>}}
+
+Most noticably, the latter lacks the call to `runtime.decoderune` for each
+iteration:
+
+```asm
+        PCDATA  $1, $0
+        CALL    runtime.decoderune(SB)
+```
+
+So this change not only shaves off 2/3 of the instructions, but it also removes
+the per iteration utf8 decoding. This is possible because the FSM only needs to
+operate on ASCII inputs, allowing the loop to treat the string as raw bytes
+rather than decoding runes.
+
+# Hoisting overflow checks from each numeric change to field creation
+
+Previously the FSM validates the running int64 value wouldnt exceed the valid
+representation on each numeric character occurence:
+
+```go
+case stateT, stateTDesignator:
+    if '0' <= b && b <= '9' {
+        digit := int64(b - '0')
+        if num > (math.MaxInt64-digit)/10 {
+            return duration, DesignatorNumberTooLarge
+        }
+        num = (num * 10) + digit
+        hasNum = true
+        curState = stateTNumber
+    } else {
+        return duration, wrapErr(MissingNumber, col)
+    }
+```
+
+To reduce branches in the hot path I decided to test moving this overflow
+checking to the location where the duration fields are created and the value is
+actually used, however this requires widening the running int64 to uint64:
+
+```diff
+- var num int64
++ var num uint64
+
+  case stateT, stateTDesignator:
+          if '0' <= b && b <= '9' {
+-                 digit := int64(b - '0')
+-                 if num > (math.MaxInt64-digit)/10 {
+-                         return duration, DesignatorNumberTooLarge
+-                 }
+-                 num = (num * 10) + digit
++                 num = (num * 10) + uint64(b-'0')
+                  hasNum = true
+                  curState = stateTNumber
+          } else {
+```
+
+And finally re-adding the check to the usage site:
+
+```diff
++ if num > math.MaxInt64 {
++         return duration, DesignatorNumberTooLarge
++ }
+```
+
+This was done to have less branches in the hot path for numbers, thus has
+little to no impact on shorter inputs, still a average ~5% improvement, tho:
+
+```text
+goos: linux
+goarch: amd64
+pkg: github.com/xnacly/go-iso8601-duration
+cpu: AMD Ryzen 7 3700X 8-Core Processor
+BenchmarkDuration/P0D-16                100000000               10.01 ns/op
+BenchmarkDuration/PT15H-16              100000000               11.81 ns/op
+BenchmarkDuration/P1W-16                100000000               10.19 ns/op
+BenchmarkDuration/P15W-16               120588932               9.779 ns/op
+BenchmarkDuration/P1Y15W-16             86265106                13.76 ns/op
+BenchmarkDuration/P15Y-16               122859478               9.910 ns/op
+BenchmarkDuration/P15Y3M-16             77137617                14.32 ns/op
+BenchmarkDuration/P15Y3M41D-16          60263616                20.74 ns/op
+BenchmarkDuration/PT15M-16              96869085                12.30 ns/op
+BenchmarkDuration/PT15M10S-16           63139969                18.33 ns/op
+BenchmarkDuration/P3Y6M4DT12H30M5S-16   29586862                39.14 ns/op
+PASS
+ok      github.com/xnacly/go-iso8601-duration   14.812s
+```
+
+> This change results in a contract change compared to `v.1.1.0`, since
+> previously the overflow check fired on each number, now it only fires on
+> exceeding the valid int64 size on usage. Overflowing uint64 is not handled.
 
 # Highlighting Improvements
 
