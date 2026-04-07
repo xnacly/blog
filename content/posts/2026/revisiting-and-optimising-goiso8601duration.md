@@ -497,18 +497,90 @@ found, match the expected characters at a given FSM state:
 ```go
 ```
 
+# Replace rune based for-range with []byte
+
+Since this isnt a function call, we cant view its affect in the flamegraph
+directly, but we can hone in on `go-iso8601-duration.From` in the graph and
+then switch to the `source`-view, showing us a total time taken in the rune
+loop and the MaxASCII check:
+
+Before
+
+```text
+108        1.65s      1.65s           	for col, b := range s { 
+109        320ms      320ms           		if b > unicode.MaxASCII { 
+```
+
+Replacing this with a byte case and thus omitting the MaxASCII check:
+
+```diff
+diff --git a/duration.go b/duration.go
+index ba295d7..440e71a 100644
+--- a/duration.go
++++ b/duration.go
+@@ -6,7 +6,6 @@ import (
+        "strconv"
+        "strings"
+        "time"
+-       "unicode"
+ )
+
+ // constants for roundtripping between time.Duration and Duration
+@@ -105,11 +104,7 @@ func From(s string) (Duration, error) {
+        var num int64
+        var hasNum bool
+
+-       for col, b := range s {
+-               if b > unicode.MaxASCII {
+-                       return duration, wrapErr(UnexpectedNonAsciiRune, col)
+-               }
+-
++       for col, b := range []byte(s) {
+                switch curState {
+                case stateStart:
+                        switch b {
+```
+
+Results in 200ms less time spent in the loop:
+
+```text
+107        1.47s      1.47s           	for col, b := range []byte(s) { 
+```
+
+Running the whole suite results in ~8.6% faster runtime:
+
+```text
+goos: linux
+goarch: amd64
+pkg: github.com/xnacly/go-iso8601-duration
+cpu: AMD Ryzen 7 3700X 8-Core Processor
+BenchmarkDuration/P0D-16                120725466                9.931 ns/op           0 B/o       0 allocs/op
+BenchmarkDuration/PT15H-16              92520681                11.67 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/P1W-16                100000000               10.15 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/P15W-16               100000000               10.26 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/P1Y15W-16             82810779                14.83 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/P15Y-16               120902158               10.29 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/P15Y3M-16             75393909                15.68 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/P15Y3M41D-16          56214748                22.31 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/PT15M-16              91787005                12.85 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/PT15M10S-16           53683030                19.45 ns/op            0 B/o       0 allocs/op
+BenchmarkDuration/P3Y6M4DT12H30M5S-16   28636116                42.47 ns/op            0 B/op      0 allocs/op
+PASS
+ok      github.com/xnacly/go-iso8601-duration   14.860s
+```
+
 # Highlighting Improvements
 
 | Benchmark        | Baseline (ns) | Improved (ns) | delta (ns) | % Faster | Speedup (x) |
 | ---------------- | ------------- | ------------- | ---------- | -------- | ----------- |
-| P0D              | 64.26         | 10.51         | -53.75     | 83.6%    | 6.11x       |
-| PT15H            | 76.69         | 14.58         | -62.11     | 81.0%    | 5.26x       |
-| P1W              | 64.10         | 10.33         | -53.77     | 83.9%    | 6.21x       |
-| P15W             | 74.35         | 12.75         | -61.60     | 82.9%    | 5.83x       |
-| P1Y15W           | 95.39         | 17.19         | -78.20     | 82.0%    | 5.55x       |
-| P15Y             | 74.44         | 12.75         | -61.69     | 82.9%    | 5.84x       |
-| P15Y3M           | 96.33         | 18.65         | -77.68     | 80.7%    | 5.16x       |
-| P15Y3M41D        | 123.7         | 25.45         | -98.25     | 79.4%    | 4.86x       |
-| PT15M            | 76.61         | 14.98         | -61.63     | 80.4%    | 5.11x       |
-| PT15M10S         | 104.8         | 22.14         | -82.66     | 78.9%    | 4.73x       |
-| P3Y6M4DT12H30M5S | 188.7         | 46.99         | -141.71    | 75.1%    | 4.02x       |
+| P0D              | 64.26         | 
+| PT15H            | 76.69         | 
+| P1W              | 64.10         | 
+| P15W             | 74.35         | 
+| P1Y15W           | 95.39         | 
+| P15Y             | 74.44         | 
+| P15Y3M           | 96.33         | 
+| P15Y3M41D        | 123.7         | 
+| PT15M            | 76.61         | 
+| PT15M10S         | 104.8         | 
+| P3Y6M4DT12H30M5S | 188.7         | 
