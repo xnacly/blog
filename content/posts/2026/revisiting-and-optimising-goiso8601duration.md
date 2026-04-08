@@ -490,9 +490,9 @@ Lets look at the flamegraph again:
 
 ![flamegraph2](/revisiting-goiso8601duration/flamegraph2.png)
 
-Shows `strings.ContainsRune`, the target of the next section). The previous
-implementation employed a duplicate check for making sure non numeric chars
-found, match the expected characters at a given FSM state:
+The offender `strings.ContainsRune`. The previous implementation employed a
+duplicate check for making sure non numeric chars match the expected characters
+at a given FSM state:
 
 ```go
 ```
