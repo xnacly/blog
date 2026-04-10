@@ -1,12 +1,10 @@
 ---
 title: "Revisiting and Optimising go-iso8601-duration"
-summary: "5.33x faster runtime due to zero allocations, less calls and better assumptions"
+summary: "6.32x faster via zero allocations, less UTF8, more ASCII and assumptions"
 date: 2026-04-06
-draft: true
 tags:
-    - go
+  - go
 ---
-
 
 While looking through my repos, an issue in
 [go-iso8601-duration](https://github.com/xnacly/go-iso8601-duration), which I
@@ -15,14 +13,17 @@ release, resulting in missing documentation for the v1.1.0 release (Since the
 gopkg website doesnt render documentation for non licensed projects).
 
 Since I had to do a new release either way, I took the opportunity and
-benchmarked the current state. -go/)).
+benchmarked the current state.
 
 # Benchmarks and a Baseline
 
-I reused the cases previously employed for checking each branch of the FSM to
-establish some micro benchmarks. But then again how do you not micro benchmark
-a duration parsing routine (I tried my best). For the FSM and a rant about the
-ISO org,  see my previous article: [Handrolling ISO8601 Duration Support for
+I reused the cases previously employed for checking the FSM to establish some
+micro benchmarks spanning ALL branches the FSM can take. Since I also run the
+tests normally before benchmarking, I dont have to validate results in the
+benchmark. 
+
+For an iso8601 FSM deepdive and a rant about the ISO org, see my previous
+article: [Handrolling ISO8601 Duration Support for
 Go](https://xnacly.me/posts/2025/handrolling-iso8601-support-for-go)
 
 ```go
@@ -64,6 +65,17 @@ func BenchmarkDuration(b *testing.B) {
 }
 ```
 
+> Benchmarks use Go's testing package on:
+>
+> ```text
+> goos: linux
+> goarch: amd64
+> pkg: github.com/xnacly/go-iso8601-duration
+> cpu: AMD Ryzen 7 3700X 8-Core Processor
+> ```
+>
+> Executed with `go test ./... -bench=. -benchmem`
+
 ```text
 goos: linux
 goarch: amd64
@@ -84,12 +96,18 @@ PASS
 ok      github.com/xnacly/go-iso8601-duration   13.952s
 ```
 
+{{<callout type="Warning - Note">}}
+At the end of each section I will show the updated output of the benchsmarks
+with an average improvement in percent, this will be relative to the previous
+change, not to the original results.
+{{</callout>}}
+
 # Replacing the numBuffer with a running int64
 
 The first weird detail I noticed, was previous me using `bytes.Buffer` to store
 the single characters making up the numbers for parsing the numeric value of
-each designator, for instance `593` in `P593W`, when a running `int64`  would
-suffice. 
+each designator, for instance `593` in `P593W`, when a running `int64` would
+suffice.
 
 ```go{hl_lines=[13,16,19,24]}
 func From(s string) (Duration, error) {
@@ -125,10 +143,10 @@ func From(s string) (Duration, error) {
 }
 ```
 
-Especially since the `byte.Buffer` interactions require multiple
-function calls for writing, a call for reading and allocations for the
-underlying buffer, while the final number parsing itself in `numBufferToNum`
-forming a second pass of the integer characters. 
+Especially since the `bytes.Buffer` interactions require multiple function
+calls for writing, a call for reading and allocations for the underlying
+buffer, while the final number parsing itself in `numBufferToNum` forming a
+second pass of the integer characters.
 
 ```go{hl_lines=3}
 func numBufferToNumber(buf bytes.Buffer) (int64, error) {
@@ -157,14 +175,14 @@ index 80a3b4c..4506457 100644
 --- a/duration.go
 +++ b/duration.go
 @@ -128,7 +128,8 @@ func From(s string) (Duration, error) {
- 
+
  	curState := stateStart
  	var col uint8
 -	numBuf := *bytes.NewBuffer(make([]byte, 0, 8))
 +	var num int64
 +	var hasNum bool
  	r := strings.NewReader(s)
- 
+
  	for {
 @@ -171,23 +172,25 @@ func From(s string) (Duration, error) {
  			if b == 'T' {
@@ -262,7 +280,7 @@ The above diff shows:
 3. No more calls to `numBuf.{WriteRune,Reset,Bytes}` in the hotpath, or anywhere
 4. No allocations anymore
 
-Benchmarks show an average improvement of ~45%:
+Benchmarks show an average runtime reduction of ~45%:
 
 ```text
 goos: linux
@@ -284,7 +302,7 @@ PASS
 ok      github.com/xnacly/go-iso8601-duration   13.605s
 ```
 
-# Throwing unicode.IsDigit away for '0' <= b && b >= '9'
+# Throwing unicode.IsDigit away for '0' <= b && b <= '9'
 
 The least impactful change is inlining `unicode.IsDigit`,
 but only the ascii (<= MaxLatin1) portion, since the filter
@@ -302,7 +320,7 @@ func IsDigit(r rune) bool {
 }
 ```
 
-This change results in ~6% faster runtime:
+This change results in ~6% less runtime:
 
 ```text
 goos: linux
@@ -323,7 +341,6 @@ BenchmarkDuration/P3Y6M4DT12H30M5S-16   11649555               102.50 ns/op     
 PASS
 ok      github.com/xnacly/go-iso8601-duration   13.601s
 ```
-
 
 # Replacing strings.Reader with for-range rune iteration
 
@@ -372,7 +389,7 @@ index e4083bb..52eec76 100644
 --- a/duration.go
 +++ b/duration.go
 @@ -2,11 +2,11 @@ package goiso8601duration
- 
+
  import (
  	"encoding/json"
 -	"io"
@@ -382,11 +399,11 @@ index e4083bb..52eec76 100644
  	"time"
 +	"unicode"
  )
- 
+
  // constants for roundtripping between time.Duration and Duration
 @@ -112,33 +112,13 @@ func From(s string) (Duration, error) {
  	}
- 
+
  	curState := stateStart
 -	var col uint8
  	var num int64
@@ -418,7 +435,7 @@ index e4083bb..52eec76 100644
  			return duration, wrapErr(UnexpectedNonAsciiRune, col)
  		}
 -		col++
- 
+
  		switch curState {
  		case stateStart:
 @@ -254,6 +234,19 @@ func From(s string) (Duration, error) {
@@ -439,7 +456,7 @@ index e4083bb..52eec76 100644
 +		return duration, nil
 +	}
  }
- 
+
  func (i Duration) Apply(t time.Time) time.Time {
 ```
 
@@ -492,9 +509,122 @@ Lets look at the flamegraph again:
 
 The offender `strings.ContainsRune`. The previous implementation employed a
 duplicate check for making sure non numeric chars match the expected characters
-at a given FSM state:
+at a given FSM state.
 
 ```go
+// In representations of duration,
+// the following designators are used as part of the expression,
+// see the doc comment of the function
+//
+// [Y] [M] [W] [D] [H] [M] [S]
+const (
+	defaultDesignators = "YMWD"
+	timeDesignators    = "MHS"
+)
+```
+
+For instance in `stateTNumber`, there is a branch for a numeric character, and
+a conditional call to `strings.ContainsRune` before switching on each
+designator in `timeDesignators` again:
+
+```go
+case stateTNumber:
+    if '0' <= b && b <= '9' {
+        digit := int64(b - '0')
+        if num > (math.MaxInt64-digit)/10 {
+            return duration, DesignatorNumberTooLarge
+        }
+        num = (num * 10) + digit
+        hasNum = true
+        curState = stateTNumber
+    } else if strings.ContainsRune(timeDesignators, b) {
+        if !hasNum {
+            return duration, wrapErr(MissingNumber, col)
+        }
+        switch b {
+        case 'H':
+            if duration.hour != 0 {
+                return duration, wrapErr(DuplicateDesignator, col)
+            }
+            duration.hour = num
+        case 'M':
+            if duration.minute != 0 {
+                return duration, wrapErr(DuplicateDesignator, col)
+            }
+            duration.minute = num
+        case 'S':
+            if duration.second != 0 {
+                return duration, wrapErr(DuplicateDesignator, col)
+            }
+            duration.second = num
+        }
+        num = 0
+        curState = stateTDesignator
+    } else {
+        return duration, wrapErr(UnknownDesignator, col)
+    }
+```
+
+The same approach is used for `stateNumber`, only with `defaultDesignators`
+instead of `timeDesignators`.
+
+While
+[strings.ContainsRune](https://cs.opensource.google/go/go/+/refs/tags/go1.26.2:src/strings/strings.go;l=72)
+is fairly optimised by having a assembly fast path for
+[utf8.RuneSelf](https://cs.opensource.google/go/go/+/refs/tags/go1.26.2:src/strings/strings.go;l=130)
+(characters below RuneSelf are represented as themselves in a single byte), it
+still has to iterate the haystack for the needle we want to check for. This is
+fully unnecessary for duration parsing, since the haystack is known at compile
+time and can therefore be represented as a switch block instead, which we
+already do, just after checking for validity.
+
+Therefore these paths can be merged into a single one, moving the error on
+invalid designator from the condition to the default case of the switch block:
+
+```diff
+@@ -204,7 +195,7 @@ func From(s string) (Duration, error) {
+          num = (num * 10) + digit
+          hasNum = true
+          curState = stateTNumber
+- } else if strings.ContainsRune(timeDesignators, b) {
++ } else {
+          if !hasNum {
+                  return duration, wrapErr(MissingNumber, col)
+          }
+@@ -224,11 +215,12 @@ func From(s string) (Duration, error) {
+                          return duration, wrapErr(DuplicateDesignator, col)
+                  }
+                  duration.second = num
++         default:
++                 return duration, wrapErr(UnknownDesignator, col)
+          }
+          num = 0
+          curState = stateTDesignator
+- } else {
+-         return duration, wrapErr(UnknownDesignator, col)
+  }
+```
+
+This change reduces the runtime by 28%:
+
+```text
+goos: linux
+goarch: amd64
+pkg: github.com/xnacly/go-iso8601-duration
+cpu: AMD Ryzen 7 3700X 8-Core Processor
+BenchmarkDuration/P0D-16                100000000               10.51 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15H-16              80446293                14.58 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P1W-16                100000000               10.33 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15W-16               93517448                12.75 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P1Y15W-16             70472916                17.19 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y-16               89461000                12.75 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y3M-16             61222558                18.65 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P15Y3M41D-16          46391493                25.45 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15M-16              80630947                14.98 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/PT15M10S-16           55008163                22.14 ns/op            0 B/op          0 allocs/op
+BenchmarkDuration/P3Y6M4DT12H30M5S-16   24965916                46.99 ns/op            0 B/op          0 allocs/op
+PASS
+ok      github.com/xnacly/go-iso8601-duration   12.956s
 ```
 
 # Replace rune based for-range with []byte
@@ -507,8 +637,8 @@ loop and the MaxASCII check:
 Before
 
 ```text
-108        1.65s      1.65s           	for col, b := range s { 
-109        320ms      320ms           		if b > unicode.MaxASCII { 
+108        1.65s      1.65s           	for col, b := range s {
+109        320ms      320ms           		if b > unicode.MaxASCII {
 ```
 
 Replacing this with a []byte cast and thus omitting the MaxASCII check:
@@ -544,10 +674,10 @@ index ba295d7..440e71a 100644
 Results in 200ms less time spent in the loop:
 
 ```text
-107        1.47s      1.47s           	for col, b := range []byte(s) { 
+107        1.47s      1.47s           	for col, b := range []byte(s) {
 ```
 
-Running the whole suite results in ~8.6% faster runtime:
+Running the whole suite results in ~8.6% less runtime:
 
 ```text
 goos: linux
@@ -572,16 +702,18 @@ ok      github.com/xnacly/go-iso8601-duration   14.860s
 This is easily explainable when looking at the assembly output. While `for col, r := range s` compiles to:
 
 {{<rawhtml>}}
+
 <iframe width="800px" height="400px" src="https://godbolt.org/e#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:go,selection:(endColumn:25,endLineNumber:6,positionColumn:25,positionLineNumber:6,selectionStartColumn:25,selectionStartLineNumber:6,startColumn:25,startLineNumber:6),source:'//+Type+your+code+here,+or+load+an+example.%0Apackage+p%0A%0Afunc+run(s+string)+int+%7B%0A++++runningResult+:%3D+0%0A++++for+col,+r+:%3D+range+s+%7B%0A++++++++runningResult+%2B%3D+int(r)+%2B+col%0A++++%7D%0A++++return+runningResult%0A%7D%0A'),l:'5',n:'0',o:'Go+source+%231',t:'0')),k:48.22469528351881,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((h:compiler,i:(compiler:gl1260,filters:(b:'0',binary:'1',binaryObject:'1',commentOnly:'0',debugCalls:'1',demangle:'0',directives:'0',execute:'1',intel:'0',libraryCode:'0',trim:'1',verboseDemangling:'0'),flagsViewOpen:'1',fontScale:14,fontUsePx:'0',j:1,lang:go,libs:!(),options:'',overrides:!(),selection:(endColumn:54,endLineNumber:35,positionColumn:54,positionLineNumber:35,selectionStartColumn:54,selectionStartLineNumber:35,startColumn:54,startLineNumber:35),source:1),l:'5',n:'0',o:'+x86-64+gc+1.26.0+(Editor+%231)',t:'0')),k:51.77530471648117,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"></iframe>
 {{</rawhtml>}}
 
 `for col, r := range []byte(s)` compiles to a third of the instructions:
 
 {{<rawhtml>}}
+
 <iframe width="800px" height="400px" src="https://godbolt.org/e#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:go,selection:(endColumn:1,endLineNumber:11,positionColumn:1,positionLineNumber:11,selectionStartColumn:1,selectionStartLineNumber:11,startColumn:1,startLineNumber:11),source:'//+Type+your+code+here,+or+load+an+example.%0Apackage+p%0A%0Afunc+run(s+string)+int+%7B%0A++++runningResult+:%3D+0%0A++++for+col,+r+:%3D+range+%5B%5Dbyte(s)+%7B%0A++++++++runningResult+%2B%3D+int(r)+%2B+col%0A++++%7D%0A++++return+runningResult%0A%7D%0A'),l:'5',n:'0',o:'Go+source+%231',t:'0')),k:48.22469528351881,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((h:compiler,i:(compiler:gl1260,filters:(b:'0',binary:'1',binaryObject:'1',commentOnly:'0',debugCalls:'1',demangle:'0',directives:'0',execute:'1',intel:'0',libraryCode:'0',trim:'1',verboseDemangling:'0'),flagsViewOpen:'1',fontScale:14,fontUsePx:'0',j:1,lang:go,libs:!(),options:'',overrides:!(),selection:(endColumn:1,endLineNumber:1,positionColumn:1,positionLineNumber:1,selectionStartColumn:1,selectionStartLineNumber:1,startColumn:1,startLineNumber:1),source:1),l:'5',n:'0',o:'+x86-64+gc+1.26.0+(Editor+%231)',t:'0')),k:51.77530471648117,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"></iframe>
 {{</rawhtml>}}
 
-Most noticably, the latter lacks the call to `runtime.decoderune` for each
+Most noticeably, the latter lacks the call to `runtime.decoderune` for each
 iteration:
 
 ```asm
@@ -590,9 +722,10 @@ iteration:
 ```
 
 So this change not only shaves off 2/3 of the instructions, but it also removes
-the per iteration utf8 decoding. This is possible because the FSM only needs to
-operate on ASCII inputs, allowing the loop to treat the string as raw bytes
-rather than decoding runes.
+the per iteration utf8 decoding, bounds checks and multi-byte branching. This
+is possible because the FSM only needs to operate on ASCII inputs (ISO8601
+duration is defined on an ASCII subset), allowing the loop to treat the string
+as raw bytes rather than decoding runes.
 
 # Hoisting overflow checks from each numeric change to field creation
 
@@ -644,7 +777,7 @@ And finally re-adding the check to the usage site:
 ```
 
 This was done to have less branches in the hot path for numbers, thus has
-little to no impact on shorter inputs, still a average ~5% improvement, tho:
+little to no impact on shorter inputs, still a average ~5% reduction, tho:
 
 ```text
 goos: linux
@@ -670,18 +803,40 @@ ok      github.com/xnacly/go-iso8601-duration   14.812s
 > previously the overflow check fired on each number, now it only fires on
 > exceeding the valid int64 size on usage. Overflowing uint64 is not handled.
 
-# Highlighting Improvements
+# Results
 
-| Benchmark        | Baseline (ns) | Improved (ns) | delta (ns) | % Faster | Speedup (x) |
-| ---------------- | ------------- | ------------- | ---------- | -------- | ----------- |
-| P0D              | 64.26         | 
-| PT15H            | 76.69         | 
-| P1W              | 64.10         | 
-| P15W             | 74.35         | 
-| P1Y15W           | 95.39         | 
-| P15Y             | 74.44         | 
-| P15Y3M           | 96.33         | 
-| P15Y3M41D        | 123.7         | 
-| PT15M            | 76.61         | 
-| PT15M10S         | 104.8         | 
-| P3Y6M4DT12H30M5S | 188.7         | 
+The base idea of these improvements is to eliminate abstractions hiding:
+
+- allocations
+- loops
+- generic logic
+
+When all of these can be omitted by knowing the problem domain / what durations
+in the iso8601 sense are made up of, specifically:
+
+- only ascii input
+- no decimal points
+- compile time known, non dynamic designators
+- number and designator pairs are parsable in a single pass
+
+When applied result in a final total runtime performance improvement compared
+to the original results shown in [Benchmarks and a
+Baseline](#benchmarks-and-a-baseline):
+
+- Geometric Speedup Mean: 6.38x
+- Range: 4.82x - 7.60x
+- Median: 6.49x
+
+| Benchmark        | Baseline (ns) | Improved (ns) | Runtime reduction (%) | Speedup (x) | Delta (ns) |
+| ---------------- | ------------: | ------------: | --------------------: | ----------: | ---------: |
+| P0D              |         64.26 |         10.01 |                 84.43 |       6.42x |      54.25 |
+| PT15H            |         76.69 |         11.81 |                 84.60 |       6.49x |      64.88 |
+| P1W              |         64.10 |         10.19 |                 84.11 |       6.29x |      53.91 |
+| P15W             |         74.35 |          9.78 |                 86.80 |       7.60x |      64.57 |
+| P1Y15W           |         95.39 |         13.76 |                 85.56 |       6.93x |      81.63 |
+| P15Y             |         74.44 |          9.91 |                 86.65 |       7.51x |      64.53 |
+| P15Y3M           |         96.33 |         14.32 |                 85.15 |       6.73x |      82.01 |
+| P15Y3M41D        |        123.70 |         20.74 |                 83.25 |       5.96x |     102.96 |
+| PT15M            |         76.61 |         12.30 |                 83.96 |       6.23x |      64.31 |
+| PT15M10S         |        104.80 |         18.33 |                 82.50 |       5.72x |      86.47 |
+| P3Y6M4DT12H30M5S |        188.70 |         39.14 |                 79.27 |       4.82x |     149.56 |
