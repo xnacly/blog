@@ -1,4 +1,5 @@
-Hi, I'm Matteo, a {{<age>}} years old software engineer from Germany.
+Hi, I'm Matteo, a {{<age>}} years old software engineer from Germany, currently
+living in Bilbao.
 
 I am interested in compilers, tech and hardware. In my free time I like to
 contribute to free and open source software, as well as writing my own
