@@ -8,7 +8,7 @@ tags:
   - rust
 ---
 
-Lets start with the measurements (its microbenchmarks all the way down baby):
+Lets start with some measurements:
 
 | Benchmark                   | Time (Lower) | Time (Median) | Time (Upper) |
 | --------------------------- | -----------: | ------------: | -----------: |
@@ -18,6 +18,12 @@ Lets start with the measurements (its microbenchmarks all the way down baby):
 | jitprogress_run             |    42.992 ns |     43.049 ns |    43.110 ns |
 | jitprogress_run_opt         |    39.499 ns |     39.550 ns |    39.600 ns |
 | jitprogress_run_opt_jit     |    11.211 ns |     11.265 ns |    11.320 ns |
+| collatz_compile             |    14.508 µs |     14.519 µs |    14.534 µs |
+| collatz_compile_opt         |    16.245 µs |     16.270 µs |    16.302 µs |
+| collatz_compile_opt_jit     |    24.316 µs |     24.338 µs |    24.372 µs |
+| collatz_run                 |    3.8873 ms |     3.8995 ms |    3.9135 ms |
+| collatz_run_opt             |    2.2917 ms |     2.2940 ms |    2.2965 ms |
+| collatz_run_opt_jit         |    1.9724 ms |     1.9744 ms |    1.9765 ms |
 
 # The whole Pipeline
 
@@ -131,10 +137,17 @@ And finally the x86 version of `arithmetics`:
 ```
 
 # Implementing a JIT
+
 ## x86 machine abstraction
+
 ## Mmaping RWX
+
 ## Basic register allocation
+
 ## Emitting x86
+
 ## Hooking the JIT up to the compiler
+
 ## How pg handles ffi or reusing the SYS op
+
 ## Profit
