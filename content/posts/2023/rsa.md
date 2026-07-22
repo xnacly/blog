@@ -42,13 +42,13 @@ Here, for example, we can choose `p` and `q` as follows:
 
 $$
 \begin{align}
-p = 61 \\\
+p = 67 \\\
 q = 97
 \end{align}
 $$
 
 ```python
-p = 61
+p = 67
 q = 97
 ```
 
@@ -59,16 +59,16 @@ Now `n` has to be determined from the multiplication of the two previously selec
 $$
 \begin{align}
 n &= p \cdot q \\\
-  &= 61 \cdot 97 \\\
-n &= \underline{5917}
+  &= 67 \cdot 97 \\\
+n &= \underline{6499}
 \end{align}
 $$
 
 ```python {hl_lines=[3,4]}
-p = 61
+p = 67
 q = 97
 print(f"n={p*q}")
-# n=5917
+# n=6499
 ```
 
 #### Calculating phi of n and e
@@ -78,23 +78,23 @@ After we have chosen `p` and `q` and calculated `n`, now follows the calculation
 $$
 \begin{align}
 \phi(n) &= (p-1) \cdot (q-1) \\\
-&= (61-1) \cdot (97-1) \\\
-&= (60) \cdot (96) \\\
-\phi(n) &= \underline{5760} \\\
+&= (67-1) \cdot (97-1) \\\
+&= (66) \cdot (96) \\\
+\phi(n) &= \underline{6336} \\\
 \end{align}
 $$
 
 ```python {hl_lines=[7, 9, 10]}
-p = 61
+p = 67
 q = 97
 
 print(f"n={p*q}")
-# n=5917
+# n=6499
 
 phi = (p-1)*(q-1)
 
 print(f"phi={phi}")
-# phi=5760
+# phi=6336
 ```
 
 is relatively prime, i.e. the following applies:
@@ -102,36 +102,31 @@ is relatively prime, i.e. the following applies:
 $$
 \begin{align}
 \gcd(e, \phi(n)) &= 1 \\\
-\gcd(e, 5760) &= 1 \\\
-\gcd(\underline{47}, 5760) &= 1
+\gcd(e, 6336) &= 1 \\\
+\gcd(\underline{47}, 6336) &= 1
 \end{align}
 $$
 
-Our goal is to choose a small but not too small odd number for `e`, therefore i use the 47 for `e`.
+Our goal is to choose a small but not too small odd number for `e`, therefore we use 47 for `e`.
 
-```python {hl_lines=[1, "14-20", 22, 23]}
+```python {hl_lines=[1, "14-15", "17-18"]}
 from math import gcd
 
-p = 61
+p = 67
 q = 97
 
 print(f"n={p*q}")
-# n=5917
+# n=6499
 
 phi = (p-1)*(q-1)
 
 print(f"phi={phi}")
-# phi=5760
+# phi=6336
 
-pe = []
-for i in range(2, phi):
-    if gcd(i, phi) == 1:
-        pe.append(i)
-        # stop looping after 12 elements in array pe
-        if len(pe) == 12:
-            break
+e = 47
+assert gcd(e, phi) == 1
 
-print(f"e={pe[-1]}")
+print(f"e={e}")
 # e=47
 ```
 
@@ -142,52 +137,47 @@ Formula for calculating the private key:
 $$
 \begin{align}
 e \cdot d \mod \phi(n) &= 1 \\\
-47 \cdot d \mod 5760 &= 1 \\\
-47 \cdot \underline{1103} \mod 5760 &= 1
+47 \cdot d \mod 6336 &= 1 \\\
+47 \cdot \underline{2831} \mod 6336 &= 1
 \end{align}
 $$
 
-```python {hl_lines=["25-29", "31-32"]}
+```python {hl_lines=["20-24", "26-27"]}
 from math import gcd
 
-p = 61
+p = 67
 q = 97
 
 print(f"n={p*q}")
-# n=5917
+# n=6499
 
 phi = (p-1)*(q-1)
 
 print(f"phi={phi}")
-# phi=5760
+# phi=6336
 
-pe = []
-for i in range(2, phi):
-    if gcd(i, phi) == 1:
-        pe.append(i)
-        # stop looping after 12 elements in array pe
-        if len(pe) == 12:
-            break
+e = 47
+assert gcd(e, phi) == 1
 
-print(f"e={pe[-1]}")
+print(f"e={e}")
 # e=47
 
 d = 0
 for i in range(0, phi):
-    if (i*pe[-1]) % phi == 1:
+    if (i*e) % phi == 1:
         d = i
         break
 
 print(f"d={d}")
-# d=1103
+# d=2831
 ```
 
 Resulting keys:
 
 $$
 \begin{align}
-\textrm{Public key: } (e,n) \rightarrow (47, 5917) \\\
-\textrm{Private key: } (d,n) \rightarrow (1103, 5917) \\\
+\textrm{Public key: } (e,n) \rightarrow (47, 6499) \\\
+\textrm{Private key: } (d,n) \rightarrow (2831, 6499) \\\
 \end{align}
 $$
 
@@ -201,39 +191,34 @@ Example string: `hello:)`
 | ---------- | --- | --- | --- | --- | --- | --- | --- |
 | Numeric    | 104 | 101 | 108 | 108 | 111 | 58  | 41  |
 
-```python {hl_lines=["34-39"]}
+```python {hl_lines=["28-33"]}
 from math import gcd
 
-p = 61
+p = 67
 q = 97
 
 print(f"n={p*q}")
-# n=5917
+# n=6499
 
 phi = (p-1)*(q-1)
 
 print(f"phi={phi}")
-# phi=5760
+# phi=6336
 
-pe = []
-for i in range(2, phi):
-    if gcd(i, phi) == 1:
-        pe.append(i)
-        # stop looping after 12 elements in array pe
-        if len(pe) == 12:
-            break
+e = 47
+assert gcd(e, phi) == 1
 
-print(f"e={pe[-1]}")
+print(f"e={e}")
 # e=47
 
 d = 0
 for i in range(0, phi):
-    if (i*pe[-1]) % phi == 1:
+    if (i*e) % phi == 1:
         d = i
         break
 
 print(f"d={d}")
-# d=1103
+# d=2831
 
 example_string = "hello:)"
 print(f"example_string={example_string}")
@@ -254,54 +239,49 @@ $$
 where `m` is the character to encrypt and `e` and `n` are pieces of the public key:
 
 $$
-\textrm{Public key: } (e,n) \rightarrow (47, 5917) \\\
+\textrm{Public key: } (e,n) \rightarrow (47, 6499) \\\
 $$
 
 $$
 \begin{align}
-e(104)&=104^{47} \mod 5917=3381 \\\
-e(101)&=101^{47} \mod 5917=5214 \\\
-e(108)&=108^{47} \mod 5917=2575 \\\
-e(108)&=108^{47} \mod 5917=2575 \\\
-e(111)&=111^{47} \mod 5917=3000 \\\
-e(58)&=58^{47} \mod 5917=3303 \\\
-e(41)&=41^{47} \mod 5917=3809 \\\
+e(104)&=104^{47} \mod 6499=2508 \\\
+e(101)&=101^{47} \mod 6499=6378 \\\
+e(108)&=108^{47} \mod 6499=1799 \\\
+e(108)&=108^{47} \mod 6499=1799 \\\
+e(111)&=111^{47} \mod 6499=381 \\\
+e(58)&=58^{47} \mod 6499=4564 \\\
+e(41)&=41^{47} \mod 6499=3809 \\\
 \end{align}
 $$
 
-```python {hl_lines=["41-43", "45-48"]}
+```python {hl_lines=["36-38", "40-43"]}
 from math import gcd
 
-p = 61
+p = 67
 q = 97
 
 print(f"n={p*q}")
-# n=5917
+# n=6499
 
 phi = (p-1)*(q-1)
 
 print(f"phi={phi}")
-# phi=5760
+# phi=6336
 
-pe = []
-for i in range(2, phi):
-    if gcd(i, phi) == 1:
-        pe.append(i)
-        # stop looping after 12 elements in array pe
-        if len(pe) == 12:
-            break
+e = 47
+assert gcd(e, phi) == 1
 
-print(f"e={pe[-1]}")
+print(f"e={e}")
 # e=47
 
 d = 0
 for i in range(0, phi):
-    if (i*pe[-1]) % phi == 1:
+    if (i*e) % phi == 1:
         d = i
         break
 
 print(f"d={d}")
-# d=1103
+# d=2831
 
 example_string = "hello:)"
 print(f"example_string={example_string}")
@@ -312,18 +292,18 @@ print(f"example_string_numeric={example_string_numeric}")
 
 encrypted = []
 for c in example_string_numeric:
-    encrypted.append(c ** pe[-1] % (p*q))
+    encrypted.append(c ** e % (p*q))
 
 print(f"encrypted={encrypted}")
-# encrypted=[3381, 5214, 2575, 2575, 3000, 3303, 3809]
+# encrypted=[2508, 6378, 1799, 1799, 381, 4564, 3809]
 print(f"chiffre={' '.join([str(i) for i in encrypted])}")
-# chiffre=3381 5214 2575 2575 3000 3303 3809
+# chiffre=2508 6378 1799 1799 381 4564 3809
 ```
 
 | Characters | h    | e    | l    | l    | o    | :    | )    |
 | ---------- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
 | Numeric    | 104  | 101  | 108  | 108  | 111  | 58   | 41   |
-| Chiffre    | 3381 | 5214 | 2575 | 2575 | 3000 | 3303 | 3809 |
+| Chiffre    | 2508 | 6378 | 1799 | 1799 | 381  | 4564 | 3809 |
 
 ### Decrypting
 
@@ -340,54 +320,49 @@ $$
 where `c` is the character to decrypt and `d` and `n` are pieces of the private key:
 
 $$
-\textrm{Private key: } (d,n) \rightarrow (1103, 5917) \\\
+\textrm{Private key: } (d,n) \rightarrow (2831, 6499) \\\
 $$
 
 $$
 \begin{align}
-d(3381)&=3381^{1103} \mod 5917=104 \\\
-d(5214)&=5214^{1103} \mod 5917=101 \\\
-d(2575)&=2575^{1103} \mod 5917=108 \\\
-d(2575)&=2575^{1103} \mod 5917=108 \\\
-d(3000)&=3000^{1103} \mod 5917=111 \\\
-d(3303)&=3303^{1103} \mod 5917=58  \\\
-d(3809)&=3809^{1103} \mod 5917=41  \\\
+d(2508)&=2508^{2831} \mod 6499=104 \\\
+d(6378)&=6378^{2831} \mod 6499=101 \\\
+d(1799)&=1799^{2831} \mod 6499=108 \\\
+d(1799)&=1799^{2831} \mod 6499=108 \\\
+d(381)&=381^{2831} \mod 6499=111 \\\
+d(4564)&=4564^{2831} \mod 6499=58  \\\
+d(3809)&=3809^{2831} \mod 6499=41  \\\
 \end{align}
 $$
 
-```python {hl_lines=["50-52", "54-57"]}
+```python {hl_lines=["45-47", "49-52"]}
 from math import gcd
 
-p = 61
+p = 67
 q = 97
 
 print(f"n={p*q}")
-# n=5917
+# n=6499
 
 phi = (p-1)*(q-1)
 
 print(f"phi={phi}")
-# phi=5760
+# phi=6336
 
-pe = []
-for i in range(2, phi):
-    if gcd(i, phi) == 1:
-        pe.append(i)
-        # stop looping after 12 elements in array pe
-        if len(pe) == 12:
-            break
+e = 47
+assert gcd(e, phi) == 1
 
-print(f"e={pe[-1]}")
+print(f"e={e}")
 # e=47
 
 d = 0
 for i in range(0, phi):
-    if (i*pe[-1]) % phi == 1:
+    if (i*e) % phi == 1:
         d = i
         break
 
 print(f"d={d}")
-# d=1103
+# d=2831
 
 example_string = "hello:)"
 print(f"example_string={example_string}")
@@ -398,12 +373,12 @@ print(f"example_string_numeric={example_string_numeric}")
 
 encrypted = []
 for c in example_string_numeric:
-    encrypted.append(c ** pe[-1] % (p*q))
+    encrypted.append(c ** e % (p*q))
 
 print(f"encrypted={encrypted}")
-# encrypted=[3381, 5214, 2575, 2575, 3000, 3303, 3809]
+# encrypted=[2508, 6378, 1799, 1799, 381, 4564, 3809]
 print(f"chiffre={' '.join([str(i) for i in encrypted])}")
-# chiffre=3381 5214 2575 2575 3000 3303 3809
+# chiffre=2508 6378 1799 1799 381 4564 3809
 
 decrypted = []
 for c in encrypted:
@@ -437,10 +412,10 @@ The factorizing integers defines the process of calculating the factors which mu
 This is extremely useful to work our way back from the public key to the private key.
 
 $$
-\textrm{Public key: } (e,n) \rightarrow (47, 5917) \\\
+\textrm{Public key: } (e,n) \rightarrow (47, 6499) \\\
 $$
 
-$$e = 47 \\\ n = 5917$$
+$$e = 47 \\\ n = 6499$$
 
 $$
 \begin{align}
@@ -450,39 +425,34 @@ $$
 
 Using the following script, we can perform the integer factorization and calculate `p` and `q`:
 
-```python {hl_lines=["59-71"]}
+```python {hl_lines=["54-66"]}
 from math import gcd
 
-p = 61
+p = 67
 q = 97
 
 print(f"n={p*q}")
-# n=5917
+# n=6499
 
 phi = (p-1)*(q-1)
 
 print(f"phi={phi}")
-# phi=5760
+# phi=6336
 
-pe = []
-for i in range(2, phi):
-    if gcd(i, phi) == 1:
-        pe.append(i)
-        # stop looping after 12 elements in array pe
-        if len(pe) == 12:
-            break
+e = 47
+assert gcd(e, phi) == 1
 
-print(f"e={pe[-1]}")
+print(f"e={e}")
 # e=47
 
 d = 0
 for i in range(0, phi):
-    if (i*pe[-1]) % phi == 1:
+    if (i*e) % phi == 1:
         d = i
         break
 
 print(f"d={d}")
-# d=1103
+# d=2831
 
 example_string = "hello:)"
 print(f"example_string={example_string}")
@@ -493,12 +463,12 @@ print(f"example_string_numeric={example_string_numeric}")
 
 encrypted = []
 for c in example_string_numeric:
-    encrypted.append(c ** pe[-1] % (p*q))
+    encrypted.append(c ** e % (p*q))
 
 print(f"encrypted={encrypted}")
-# encrypted=[3381, 5214, 2575, 2575, 3000, 3303, 3809]
+# encrypted=[2508, 6378, 1799, 1799, 381, 4564, 3809]
 print(f"chiffre={' '.join([str(i) for i in encrypted])}")
-# chiffre=3381 5214 2575 2575 3000 3303 3809
+# chiffre=2508 6378 1799 1799 381 4564 3809
 
 decrypted = []
 for c in encrypted:
@@ -515,19 +485,19 @@ def prime_factors(n):
     while n > 1:
         while n % d == 0:
             factors.append(d)
-            n /= d
+            n //= d
         d = d + 1
     return factors
 
 factors = prime_factors(p*q)
 print(f"factors={factors}")
-# factors=[61, 97]
+# factors=[67, 97]
 ```
 
 $$
 \begin{align}
-5917 &= p \cdot q \\\
-&= \underline{61 \cdot 97}
+6499 &= p \cdot q \\\
+&= \underline{67 \cdot 97}
 \end{align}
 $$
 
@@ -536,9 +506,9 @@ Now we calculate phi of n:
 $$
 \begin{align}
 \phi(n) &= (p-1) \cdot (q-1) \\\
-&= (61-1) \cdot (97-1) \\\
-&= 60 \cdot 96 \\\
-\phi(n) &= \underline{5760}
+&= (67-1) \cdot (97-1) \\\
+&= 66 \cdot 96 \\\
+\phi(n) &= \underline{6336}
 \end{align}
 $$
 
@@ -547,45 +517,40 @@ This can be used to calculate `d`:
 $$
 \begin{align}
 e \cdot d \mod \phi(n) &= 1 \\\
-47 \cdot d \mod 5760 &= 1
+47 \cdot d \mod 6336 &= 1
 \end{align}
 $$
 
 To calculate this `d`, we simply use a for loop:
 
-```python {hl_lines=["72-77"]}
+```python {hl_lines=["67-72"]}
 from math import gcd
 
-p = 61
+p = 67
 q = 97
 
 print(f"n={p*q}")
-# n=5917
+# n=6499
 
 phi = (p-1)*(q-1)
 
 print(f"phi={phi}")
-# phi=5760
+# phi=6336
 
-pe = []
-for i in range(2, phi):
-    if gcd(i, phi) == 1:
-        pe.append(i)
-        # stop looping after 12 elements in array pe
-        if len(pe) == 12:
-            break
+e = 47
+assert gcd(e, phi) == 1
 
-print(f"e={pe[-1]}")
+print(f"e={e}")
 # e=47
 
 d = 0
 for i in range(0, phi):
-    if (i*pe[-1]) % phi == 1:
+    if (i*e) % phi == 1:
         d = i
         break
 
 print(f"d={d}")
-# d=1103
+# d=2831
 
 example_string = "hello:)"
 print(f"example_string={example_string}")
@@ -596,12 +561,12 @@ print(f"example_string_numeric={example_string_numeric}")
 
 encrypted = []
 for c in example_string_numeric:
-    encrypted.append(c ** pe[-1] % (p*q))
+    encrypted.append(c ** e % (p*q))
 
 print(f"encrypted={encrypted}")
-# encrypted=[3381, 5214, 2575, 2575, 3000, 3303, 3809]
+# encrypted=[2508, 6378, 1799, 1799, 381, 4564, 3809]
 print(f"chiffre={' '.join([str(i) for i in encrypted])}")
-# chiffre=3381 5214 2575 2575 3000 3303 3809
+# chiffre=2508 6378 1799 1799 381 4564 3809
 
 decrypted = []
 for c in encrypted:
@@ -618,30 +583,30 @@ def prime_factors(n):
     while n > 1:
         while n % d == 0:
             factors.append(d)
-            n /= d
+            n //= d
         d = d + 1
     return factors
 
-factors = prime_factors(p*q);
+factors = prime_factors(p*q)
 print(f"factors={factors}")
-# factors=[61, 97]
+# factors=[67, 97]
 new_phi = (factors[0]-1)*(factors[1]-1)
-for i in range(0, p*q):
-    if (47 * i) % 5760 == 1:
+for i in range(0, new_phi):
+    if (e * i) % new_phi == 1:
         print(f"d={i}")
         break
-# d=1103
+# d=2831
 ```
 
 $$
 \begin{align}
-47 \cdot \underline{1103} \mod 5760 = 1 \\\
+47 \cdot \underline{2831} \mod 6336 = 1 \\\
 \end{align}
 $$
 
 $$
 \begin{align}
-\textrm{Private key} = (d,n) \rightarrow (1103, 5760)
+\textrm{Private key} = (d,n) \rightarrow (2831, 6499)
 \end{align}
 $$
 
