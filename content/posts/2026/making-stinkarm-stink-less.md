@@ -1,6 +1,6 @@
 ---
 title: "Making stinkarm stink way less, or more?"
-summary: "_start(), main(), table driven armv7 instr decoding, overengineered tooling and more"
+summary: "removing overengineered memory translation, hardening and new table driven armv7 instr decoding"
 date: 2026-05-10
 draft: true
 tags:
@@ -8,21 +8,43 @@ tags:
   - rust
 ---
 
-About half a year ago I wrote an article about implementing a userspace armv7
-emulator from scratch, meaning I implemented:
+Its been a while, but about half a year ago I wrote an article about
+implementing a userspace armv7 emulator from scratch, meaning I implemented:
 
-- elf(32) parsing, validation and interpretation (into rust types)
-- decoding of a very small subset of armv7 instructions
+```armasm
+    .section .rodata
+msg:
+    .asciz "Hello, world!\n"
+
+    .section .text
+    .global _start
+_start:
+    ldr r0, =1
+    ldr r1, =msg
+    mov r2, #14
+    mov r7, #4
+    svc #0
+
+    mov r0, #0
+    mov r7, #1
+    svc #0
+```
+
+Or as a list:
+
+- elf(32) parsing, validation and interpretation
+- decoding of a very small subset of armv7 instructions (only 3)
 - executing said instructions, even conditional ones 🤓
 - translating memory access from the guest into the host
 - syscall forwarding (from armv7 to x86)
-- syscall sandboxing (only a restricted syscall subset) and syscall deny
+- syscall sandboxing (only a restricted syscall subset) and denying syscall execution
 
 Do read [Building a Minimal Viable Armv7 Emulator from
 Scratch](/posts/2025/building-a-minimal-viable-armv7-emulator/), since this
-post doesnt go as deep into detail as the previous one.
+post doesnt go as deep into detail as the previous one (It's my first article
+in 3 months I had enough motivation for writing :O).
 
-# I overengineered the memory translation, its 32bit, just mmap 4Gigs
+# Overly complex host to guest mem translation
 
 On the first article, [~aengelke on
 lobste.rs](https://lobste.rs/s/bv3570/building_minimal_viable_armv7_emulator),
@@ -37,15 +59,212 @@ had some comments, the one resonating the most was:
 > over a sorted array is simpler than a B-tree.
 > [...]
 
+So now i figured, why not improve on my implementation a bit, first with
+replacing the complex allocation region based tracking with just allocating a
+4gig slab in memory for the guest, mapping the process regions there and
+handing out pointers into that region to the guest.
+
+So, previously the memory translation worked as follows:
+
+1. One takes a binary tree map of a guest starting addr to its host segment
+
+   ```rust
+   struct MappedSegment {
+       host_ptr: *mut u8,
+       len: u32,
+   }
+
+   pub struct Mem {
+       maps: BTreeMap<u32, MappedSegment>,
+   }
+   ```
+
+2. On ask for a region handout, specifically on mapping ELF segments with a
+   starting addr, `map_region` is called:
+
+   ```rust
+   // in stinkarm::elf::pheader::Pheader::map:
+
+   // record mapping in guest memory table, so CPU can translate guest vaddr to host pointer
+   guest_mem.map_region(self.vaddr, len, segment_ptr);
+
+   // in stinkarm::mem::Mem:
+
+   pub fn map_region(&mut self, guest_addr: u32, len: u32, host_ptr: *mut u8) {
+       self.maps
+           .insert(guest_addr, MappedSegment { host_ptr, len });
+   }
+   ```
+
+3. Since the cpu needs to fetch an instruction, there is `read_u32`, calling `translate`:
+
+   ```rust
+   /// translate a guest addr to a host addr we can write and read from
+   pub fn translate(&self, guest_addr: u32) -> Option<*mut u8> {
+       // Find the greatest key <= guest_addr.
+       let (&base, seg) = self.maps.range(..=guest_addr).next_back()?;
+       if guest_addr < base.wrapping_add(seg.len) {
+           let offset = guest_addr.wrapping_sub(base);
+           Some(unsafe { seg.host_ptr.add(offset as usize) })
+       } else {
+           None
+       }
+   }
+
+   pub fn read_u32(&self, guest_addr: u32) -> Option<u32> {
+       let ptr = self.translate(guest_addr)?;
+       unsafe { Some(u32::from_le(*(ptr as *const u32))) }
+   }
+
+
+   // in stinkarm::cpu::Cpu:
+
+   pub fn step(&mut self) -> Result<bool, err::Err> {
+       let Some(word) = self.mem.read_u32(self.pc()) else {
+           return Ok(false);
+       };
+
+       // [...]
+   }
+   ```
+
+Of course this totally unnecessary work, we dont need to keep track of every
+mapping/allocation/region by walking their ranges, we only need to make sure
+the R/W interaction request is within bounds. Thus the new implementation is:
+
+1. One takes a pointer and a size:
+
+   ```rust
+   pub struct Mem {
+       ptr: NonNull<u8>,
+       len: usize,
+   }
+   ```
+
+2. When asked to map ELF segments, `stinkarm::mem::Mem::map_region` is called:
+
+   ```rust
+   // in stinkarm::elf::pheader::Pheader::map:
+   guest_mem.map_region(self.vaddr, file_slice)?;
+
+   // in stinkarm::mem::Mem:
+
+   pub fn map_region(&mut self, guest_addr: u32, data: &[u8]) -> Result<(), String> {
+       let dst = self
+           .get_slice_mut(guest_addr, data.len())
+           .ok_or_else(|| format!("guest region out of bounds at {guest_addr:#010x}"))?;
+       dst.copy_from_slice(data);
+       Ok(())
+   }
+   ```
+
+3. When cpu requests a dword for decoding, it does so by invoking
+   `stinkarm::mem::Mem::read32`, just as before, only this time with
+   bounds checks:
+
+    ```rust
+    pub fn read_u32(&self, guest_addr: u32) -> Option<u32> {
+        let bytes = self.get_slice(guest_addr, 4)?;
+        Some(u32::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn get_slice(&self, guest_addr: u32, len: usize) -> Option<&[u8]> {
+        if !self.in_bounds(guest_addr, len) {
+            return None;
+        }
+
+        Some(unsafe { std::slice::from_raw_parts(self.ptr.as_ptr().add(guest_addr as usize), len) })
+    }
+    ```
+
+
 # Hardening the existing implementation
 
-## Load at null
+I also noticed I have a lot of stuff that (even with the small surface of just
+the `write.2` and `exit.2` syscalls, `ldr`, `mov` and `svc`) could enable
+translating untrusted guest adresses into host mem access.
 
-## Writing null
+Preventing this via checking the validity of the address passed to `write.2`,
+we do this while translating guest addresses to host memory space in
+`stinkarm::mem::Mem` with a `in_bounds` call inside the `translate_range` call:
 
-## Writing out of bounds
+```rust
+const NULL_PAGE_SIZE: u32 = 0x1000;
+
+impl Mem {
+    fn in_bounds(&self, guest_addr: u32, len: usize) -> bool {
+        if guest_addr < NULL_PAGE_SIZE {
+            return false;
+        }
+
+        let start = guest_addr as usize;
+        let Some(end) = start.checked_add(len) else {
+            return false;
+        };
+
+        end <= self.len
+    }
+
+    pub fn translate_range(&self, guest_addr: u32, len: usize) -> Option<*mut u8> {
+        if !self.in_bounds(guest_addr, len) {
+            return None;
+        }
+
+        Some(self.ptr.as_ptr().wrapping_add(guest_addr as usize))
+    }
+}
+```
+
+I added multiple tests for making sure I correctly catch writing a null
+pointer, writing out of guest memory and loading elf segments at 0x0:
+
+```armasm
+@ Attempts to write seven bytes from guest address 0.
+@ The emulator should reject the null guest pointer with EFAULT.
+
+    .section .rodata
+msg:
+    .ascii "ignored"
+
+    .section .text
+    .global _start
+_start:
+    mov r0, #1
+    mov r1, #0
+    mov r2, #7
+    mov r7, #4
+    svc #0
+
+    mov r0, #0
+    mov r7, #1
+    svc #0
+```
+
+```armasm
+@ Attempts to write from 0x08000000, exactly one byte past the default guest arena.
+@ The emulator should bounds-check the full write buffer and return EFAULT.
+
+    .section .rodata
+msg:
+    .ascii "ignored"
+
+    .section .text
+    .global _start
+_start:
+    mov r0, #1
+    ldr r1, =0x08000000
+    mov r2, #7
+    mov r7, #4
+    svc #0
+
+    mov r0, #0
+    mov r7, #1
+    svc #0
+```
 
 # To DSL or not, macros aint helping for the latter
+
+Previously I only had
 
 Domain-specific language:
 
