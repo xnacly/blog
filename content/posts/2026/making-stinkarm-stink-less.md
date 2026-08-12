@@ -8,6 +8,13 @@ tags:
   - rust
 ---
 
+![acorn, armv7-a and stinkarm](/stinkarm/stinkarm.png)[^1]
+
+[^1]:
+    Both the pixel art heading and all the
+    bullshit in this article is brainslob, nothing
+    was produced by a clanker.
+
 Its been a while, but about half a year ago I wrote an article about
 implementing a userspace armv7 emulator from scratch, meaning I implemented:
 
@@ -42,7 +49,9 @@ Or as a list:
 Do read [Building a Minimal Viable Armv7 Emulator from
 Scratch](/posts/2025/building-a-minimal-viable-armv7-emulator/), since this
 post doesnt go as deep into detail as the previous one (It's my first article
-in 3 months I had enough motivation for writing :O).
+in 3 months I had enough motivation for writing :O). This is partially an
+update, partially my toughts on decoding and emulating armv7-a and also a bit
+of a devlog.
 
 # Overly complex host to guest mem translation
 
@@ -162,21 +171,20 @@ the R/W interaction request is within bounds. Thus the new implementation is:
    `stinkarm::mem::Mem::read32`, just as before, only this time with
    bounds checks:
 
-    ```rust
-    pub fn read_u32(&self, guest_addr: u32) -> Option<u32> {
-        let bytes = self.get_slice(guest_addr, 4)?;
-        Some(u32::from_le_bytes(bytes.try_into().unwrap()))
-    }
+   ```rust
+   pub fn read_u32(&self, guest_addr: u32) -> Option<u32> {
+       let bytes = self.get_slice(guest_addr, 4)?;
+       Some(u32::from_le_bytes(bytes.try_into().unwrap()))
+   }
 
-    fn get_slice(&self, guest_addr: u32, len: usize) -> Option<&[u8]> {
-        if !self.in_bounds(guest_addr, len) {
-            return None;
-        }
+   fn get_slice(&self, guest_addr: u32, len: usize) -> Option<&[u8]> {
+       if !self.in_bounds(guest_addr, len) {
+           return None;
+       }
 
-        Some(unsafe { std::slice::from_raw_parts(self.ptr.as_ptr().add(guest_addr as usize), len) })
-    }
-    ```
-
+       Some(unsafe { std::slice::from_raw_parts(self.ptr.as_ptr().add(guest_addr as usize), len) })
+   }
+   ```
 
 # Hardening the existing implementation
 
@@ -219,9 +227,6 @@ I added multiple tests for making sure I correctly catch writing a null
 pointer, writing out of guest memory and loading elf segments at 0x0:
 
 ```armasm
-@ Attempts to write seven bytes from guest address 0.
-@ The emulator should reject the null guest pointer with EFAULT.
-
     .section .rodata
 msg:
     .ascii "ignored"
@@ -241,9 +246,6 @@ _start:
 ```
 
 ```armasm
-@ Attempts to write from 0x08000000, exactly one byte past the default guest arena.
-@ The emulator should bounds-check the full write buffer and return EFAULT.
-
     .section .rodata
 msg:
     .ascii "ignored"
@@ -264,9 +266,13 @@ _start:
 
 # To DSL or not, macros aint helping for the latter
 
-Previously I only had
+Previously I hardcoded every opcode and its fields
+to decode them into a rust representation, now only
+the opcode is subject to decoding. This is achived
+with a nice looking compiletime constant list of
+patterns:
 
-Domain-specific language:
+<!-- TODO: update this -->
 
 ```rust
 const DECODE_RULES: &[ArmRule] = &[
@@ -293,3 +299,50 @@ const DECODE_RULES: &[ArmRule] = &[
     }),
 ];
 ```
+
+# Full decoding only on demand
+
+Previous to the instruction DSL, I decoded all necessary values for all
+instructions at all times, meaning short instructions would decode even if they
+didnt match, just as a sideeffect of attempting to figure out what instruction.
+The DSL allows only decoding the op code and letting the cpu decode only what
+it needs via `decoder::{decode_word,bit,bits,sign_extend,rotated_imm}`, where
+bit and bits enable partial access into the word, and decode_word returns the
+op code, the condition and the raw word itself for further processing in the
+cpu emulation:
+
+```rust
+/// fetch-decode-execute step, will only return false on exit svc
+pub fn step(&mut self) -> Result<bool, err::Err> {
+    // [...] fetch word
+
+    let Decoded { kind, cond, raw } = decoder::decode_word(word);
+
+    // [...]
+
+    match kind {
+        InstructionKind::MovImm => {
+            let rd = decoder::bits(raw, 15, 12) as usize;
+            let imm12 = decoder::bits(raw, 11, 0);
+            // [...]
+        }
+        // [...]
+        InstructionKind::LdrLiteral => {
+            let rd = decoder::bits(raw, 15, 12) as usize;
+            let imm12 = decoder::bits(raw, 11, 0);
+
+            // [...]
+        }
+    }
+}
+```
+
+# Supporting B and BL
+
+B is encoded as 
+
+<!-- TODO: write about b and bl encoding here -->
+
+# Testing "frame(work)"
+
+<!-- TODO: write about integration tests and tooling here -->
