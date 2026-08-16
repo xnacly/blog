@@ -566,3 +566,5 @@ Hello, world!
 ```
 
 So yeah, thats it, now please enjoy me bashing in a claude server rack: 
+
+![claude](/stinkarm/claude-ze-fucker.png)
