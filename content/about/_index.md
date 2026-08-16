@@ -7,7 +7,6 @@ programming languages, benchmarking all over the place and writing stuff I
 forget to commit.
 
 {{<rawhtml>}}
-
 <div style="display: flex; justify-content: center; gap: 0.5rem">
     <img src="/images/badges/green-team.gif"/>
     <img src="/images/badges/nothingtoblock.gif"/>
