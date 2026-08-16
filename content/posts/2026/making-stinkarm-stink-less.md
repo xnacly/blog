@@ -264,7 +264,7 @@ _start:
     svc #0
 ```
 
-# To DSL or not, macros aint helping for the latter
+# To DSL or not
 
 Previously I hardcoded every opcode and its fields
 to decode them into a rust representation, now only
@@ -272,33 +272,114 @@ the opcode is subject to decoding. This is achived
 with a nice looking compiletime constant list of
 patterns:
 
-<!-- TODO: update this -->
-
 ```rust
 const DECODE_RULES: &[ArmRule] = &[
     arm_rule!(Svc {
-        bits 27..24 = 0b1111,
+        bits(27..24 = 0b1111),
     }),
     arm_rule!(Branch {
-        bits 27..25 = 0b101,
+        bits(27..25 = 0b101),
     }),
     // LDR literal: `ldr Rt, [pc, #imm12]`.
     arm_rule!(LdrLiteral {
-        bits 27..26 = 0b01, // load/store class
-        bit 24 = 1,         // P: pre-indexed address
-        bit 23 = 1,         // U: add positive offset
-        bit 22 = 0,         // B: word transfer, not byte
-        bit 21 = 0,         // W: no writeback
-        bit 20 = 1,         // L: load, not store
-        bits 19..16 = 15,   // Rn: base register is pc/r15
+        bits(27..26 = 0b01), // load/store class
+        bit(24 = 1),         // P: pre-indexed address
+        bit(23 = 1),         // U: add positive offset
+        bit(22 = 0),         // B: word transfer, not byte
+        bit(21 = 0),         // W: no writeback
+        bit(20 = 1),         // L: load, not store
+        bits(19..16 = 15),   // Rn: base register is pc/r15
     }),
     // MOV immediate: data-processing immediate with opcode 1101.
     arm_rule!(MovImm {
-        bits 27..25 = 0b001,
-        bits 24..21 = Op::Mov as u32,
+        bits(27..25 = 0b001),
+        bits(24..21 = Op::Mov as u32),
     }),
 ];
 ```
+
+> If youre interested in ARMv7 instruction encoding I can recommend the [ARM®
+> Architecture Reference Manual ARMv7-A and ARMv7-R
+> edition](https://documentation-service.arm.com/static/5f8daeb7f86e16515cdb8c4e)
+
+The macro itself builds a bit pattern that can then be used with a simple AND
+bit instruction to detect:
+
+```rust
+macro_rules! arm_rule {
+    ($kind:ident { $($field:ident($($args:tt)*)),* $(,)? }) => {
+        ArmRule {
+            kind: InstructionKind::$kind,
+            mask: 0 $(| arm_mask!($field($($args)*)))*,
+            value: 0 $(| arm_value!($field($($args)*)))*,
+        }
+    };
+}
+
+macro_rules! arm_mask {
+    (bit($bit:literal = $value:expr)) => {
+        1u32 << $bit
+    };
+    (bits($high:literal .. $low:literal = $value:expr)) => {
+        ((1u32 << ($high - $low + 1)) - 1) << $low
+    };
+}
+
+macro_rules! arm_value {
+    (bit($bit:literal = $value:expr)) => {
+        ($value as u32) << $bit
+    };
+    (bits($high:literal .. $low:literal = $value:expr)) => {
+        ($value as u32) << $low
+    };
+}
+```
+
+`MovImm`'s definition does therefore produce (`Op::mov` is defined as
+`0b1101`):
+
+```rust
+ArmRule {
+    kind: InstructionKind::MovImm,
+    mask: 0 
+        | ((1u32 << (27 - 25 + 1)) - 1) << 25 
+        | ((1u32 << (24 - 21 + 1)) - 1) << 21,
+    value: 0 
+        | (0b001 as u32) << 25 
+        | ((Op::Mov as u32) as u32) << 21,
+}
+
+
+impl ArmRule {
+    fn matches(&self, word: u32) -> bool {
+        (word & self.mask) == self.value
+    }
+}
+```
+
+All rules are then iterated for each 32bit word and decoded:
+
+
+```rust
+pub fn decode_word(word: u32) -> Decoded {
+    let cond = bits(word, 31, 28) as u8;
+    let kind = DECODE_RULES
+        .iter()
+        .find(|rule| rule.matches(word))
+        .map(|rule| rule.kind)
+        .unwrap_or(InstructionKind::Unknown);
+
+    Decoded {
+        cond,
+        kind,
+        raw: word,
+    }
+}
+```
+
+I know a trie or something would probably be faster, but this is nice to read,
+understandable and easy to maintain.
+
 
 # Full decoding only on demand
 
@@ -337,12 +418,151 @@ pub fn step(&mut self) -> Result<bool, err::Err> {
 }
 ```
 
+Bits and bit access is obvious, sign_extend and rotated_imm maybe less so:
+
+```rust
+pub fn bits(word: u32, high: u8, low: u8) -> u32 {
+    debug_assert!(high < 32);
+    debug_assert!(low <= high);
+    let width = high - low + 1;
+    (word >> low) & ((1 << width) - 1)
+}
+
+pub fn bit(word: u32, bit: u8) -> bool {
+    bits(word, bit, bit) != 0
+}
+
+pub fn sign_extend(value: u32, bits: u32) -> i32 {
+    debug_assert!((1..=32).contains(&bits));
+
+    let shift = 32 - bits;
+    ((value << shift) as i32) >> shift
+}
+
+pub fn rotated_imm(imm12: u32) -> u32 {
+    let rotate = ((imm12 >> 8) & 0b1111) * 2;
+    (imm12 & 0xff).rotate_right(rotate)
+}
+```
+
 # Supporting B and BL
 
-B is encoded as 
+B and BL are the unconditial branching instructions of the ARMv7 isa:
 
-<!-- TODO: write about b and bl encoding here -->
+- Branching unconditionally:
+
+    ```armasm
+    .text
+        .global _start
+    _start:
+        mov	r0, #0
+        b	1f
+        mov	r0, #1		@ must NOT execute
+    1:
+        mov	r7, #1
+        svc	#0
+    ```
+
+- Branching unconditionally with link:
+
+    ```armasm
+    .text
+        .global _start
+    _start:
+        mov	r0, #0
+        bl	foo
+        mov	r7, #1
+        svc	#0
+    foo:
+        mov	r0, #42
+        mov	r7, #1
+        svc	#0
+    ```
+
+B and BL encode:
+
+1. Conditionals, see [ARMv7 Condition code suffixes](https://support.arm.com/documentation/den0042/0100/Unified-Assembly-Language-Instructions/Instruction-set-basics/Conditional-execution?lang=en#md260-conditional-execution__tbl_cond_code_suffixes)
+2. Instruction group (`101`)
+3. Wheter or not to branch with link (`L`)
+4. Target (imm24)
+
+In bits:
+
+```text
+ 31 30 29 28 27 26 25 24 23 .. 0
+|cond       |1  0  1 |L | imm24 |
+```
+
+Meaning, its fairly easy to implement, see below. L instructs the emulator to
+save the return addr to the **L**ink**R**egister (LR) and otherwise we just
+decode the imm24, shift it 2 to the left and then sign extend it to 32 bit, add
+it to the program counter and thats it:
+
+
+```rust
+InstructionKind::Branch => {
+    let l = decoder::bit(raw, 24);
+    // BL
+    if l {
+        // save return addr to LR (next addr though)
+        self.r[14] = self.instr_addr().wrapping_add(4);
+    }
+
+    let imm24 = decoder::bits(raw, 23, 0);
+    let imm26 = imm24 << 2;
+    let imm32 = decoder::sign_extend(imm26, 26);
+
+    self.r[15] = self.arm_pc().wrapping_add(imm32 as u32);
+}
+```
 
 # Testing "frame(work)"
 
-<!-- TODO: write about integration tests and tooling here -->
+To test all the hardening stuff and every new instructions I intent to support,
+i added a bit of tooling, specifically srun, its a small stinkarm wrapper to
+build, link and execute assembly or c files:
+
+```text
+Build, link, and execute an ARM assembly or C file with stinkarm
+
+Usage: srun [OPTIONS] <INPUT> [-- <EMULATOR_ARGS>...]
+
+Arguments:
+  <INPUT>             ARM assembly or C file to run
+  [EMULATOR_ARGS]...  Extra arguments passed to stinkarm before the generated ELF path
+
+Options:
+      --text-addr <TEXT_ADDR>  Guest address used as the linker text address [default: 0x8000]
+      --out-dir <OUT_DIR>      Directory for generated object and ELF files [default: target/srun]
+      --dump-asm               Print the linked ARM disassembly before running the emulator
+  -h, --help                   Print help
+```
+
+For instance previously I had to first assemble the `examples/branch.S` file,
+then invoke stinkarm, now i can just:
+
+```shell
+cargo run --bin srun 
+    # arguments for srun
+    \ -- examples/helloWorld.S 
+    # arguments for stink arm, log instructions and syscalls
+    \ -- -linstructions -lsyscalls
+```
+
+```text
+[     0.538ms] MovImm 1110 E3A00001
+[     0.543ms] LdrLiteral 1110 E59F1014
+[     0.545ms] MovImm 1110 E3A0200E
+[     0.548ms] MovImm 1110 E3A07004
+[     0.551ms] Svc 1110 EF000000
+65174 write(fd=1, buf=0x8024, len=14) [sandbox]
+Hello, world!
+=14
+[     0.567ms] MovImm 1110 E3A00000
+[     0.570ms] MovImm 1110 E3A07001
+[     0.573ms] Svc 1110 EF000000
+65174 exit(code=0) [sandbox]
+=0
+```
+
+So yeah, thats it, now please enjoy me bashing in a claude server rack: 
