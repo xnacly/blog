@@ -1,7 +1,7 @@
 ---
 title: "Making stinkarm stink way less, or more?"
 summary: "removing overengineered memory translation, hardening and new table driven armv7 instr decoding"
-date: 2026-05-10
+date: 2026-08-16
 tags:
   - arm
   - rust
