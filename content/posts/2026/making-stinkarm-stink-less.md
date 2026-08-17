@@ -386,10 +386,10 @@ Previous to the instruction DSL, I decoded all necessary values for all
 instructions at all times, meaning short instructions would decode even if they
 didnt match, just as a sideeffect of attempting to figure out what instruction.
 The DSL allows only decoding the op code and letting the cpu decode only what
-it needs via `decoder::{decode_word,bit,bits,sign_extend,rotated_imm}`, where
-bit and bits enable partial access into the word, and decode_word returns the
-op code, the condition and the raw word itself for further processing in the
-cpu emulation:
+it needs via `decoder::{decode_word,bit,bits}` and
+`decoder::{sign_extend,rotated_imm}` where bit and bits enable partial access
+into the word, and decode_word returns the op code, the condition and the raw
+word itself for further processing in the cpu emulation:
 
 ```rust
 /// fetch-decode-execute step, will only return false on exit svc
