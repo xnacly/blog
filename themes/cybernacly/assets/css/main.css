@@ -215,6 +215,42 @@ nav:not(#TableOfContents) {
   }
 }
 
+.books {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing);
+
+  .book {
+    display: flex;
+    align-items: stretch;
+    justify-content: start;
+    border: 2px solid var(--primary);
+
+    img {
+      align-self: stretch;
+      height: auto;
+      max-height: none;
+      width: 10rem;
+      object-fit: cover;
+    }
+
+    .title-and-author {
+      display: flex;
+      align-items: center;
+      padding-left: var(--spacing);
+
+      h4 {
+        margin-right: var(--spacing);
+      }
+    }
+
+    .op {
+      padding-left: var(--spacing);
+      padding-right: var(--spacing);
+    }
+  }
+}
+
 .post {
   /* styling for the date, wordcount and read time*/
   > ul {

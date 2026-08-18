@@ -1,0 +1,30 @@
+{{ define "main" }}
+    <div class="centered">
+        <h3>Books</h3>
+        {{ .Content }}
+
+        <div class="books">
+        {{ range .Site.Data.books }}
+            <div class="book">
+                <img src="{{ .img }}"/>
+                <div>
+                    <div class="title-and-author">
+                        <h4>
+                            <a href="{{ .link }}">{{.title}}</a>
+                        </h4>
+                        <span>
+                            By {{ .author }}
+                        </span>
+                    </div>
+                    <div class="op">
+                        <span class="opinion">{{ .opinion }}</span>
+                        <p><small>Read around ~<span>{{.reading_since}}</span></small></p>
+                    </div>
+                </div>
+            </div>
+        {{ end }}
+        </div>
+
+        <p>And many more, these are just the ones I remember and wanted to comment on</p>
+    </div>
+{{ end }}

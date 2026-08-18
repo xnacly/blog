@@ -12,9 +12,14 @@ pageRef = '/posts'
 weight = 20
 
 [[menus.main]]
+name = '~/books.html'
+pageRef = '/books'
+weight = 30
+
+[[menus.main]]
 name = '~/about.html'
 pageRef = '/about'
-weight = 30
+weight = 40
 
 [module]
   [module.hugoVersion]
