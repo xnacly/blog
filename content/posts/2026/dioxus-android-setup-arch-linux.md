@@ -1,13 +1,14 @@
 ---
 title: "(Dioxus) Android Dev Setup for Arch Linux"
 summary: "The summary of hours of pain until I finally understood the android cli and Androids idiocracy"
-date: 2026-08-29
-draft: true
+date: 2026-08-30
 tags:
     - android
     - archlinux
     - rust
 ---
+
+![android](/android/android.png)
 
 {{<callout type="Info - TL;DR">}}
 Dioxus docs are a bit short for the android specific dev setup, so this is 50%
