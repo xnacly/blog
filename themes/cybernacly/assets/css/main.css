@@ -1,23 +1,22 @@
 :root {
   --spacing: 12px;
-  --background: #eff1f5;
-  --background-darker: #e6e9ef;
-  --background-lighter: #dce0e8;
-  --primary: #8839ef;
-  --primary-darker: #6626b3;
-  --primary-dark: #2d0f58;
-  --secondary: #8839ef;
-  --secondary-transparent: #8839ef10;
-  --text: #4c4f69;
-  --text-secondary: #5c5f77;
-  --warning: #df8e1d;
-  --warning-dark: #a56514;
-  --info: #04a5e5;
-  --info-dark: #004466;
-  --tip: #7287fd;
-  --tip-dark: #3b49a8;
-
-  --code-bg: #faf4ed;
+  --background: #f5efe6; 
+  --background-darker: #f2eae1; 
+  --background-lighter: #ede8dd; 
+  --primary: #c499b8; 
+  --primary-darker: #a897b8; 
+  --primary-dark: #576869; 
+  --secondary: #a897b8; 
+  --secondary-transparent: #a897b810;
+  --text: #2b3034; 
+  --text-secondary: #576869; 
+  --warning: #c4aa80; 
+  --warning-dark: #c69883; 
+  --info: #719f96; 
+  --info-dark: #455355; 
+  --tip: #8294ad; 
+  --tip-dark: #455355; 
+  --code-bg: #ede8dd; 
 }
 
 * {
@@ -204,7 +203,6 @@ nav:not(#TableOfContents) {
 
     .name {
       padding: calc(var(--spacing));
-      background-color: var(--primary-dark);
       border: 2px solid var(--primary);
       border-left: 7px solid var(--primary);
     }
