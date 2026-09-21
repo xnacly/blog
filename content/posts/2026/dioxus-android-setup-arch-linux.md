@@ -4,7 +4,6 @@ summary: "The summary of hours of pain until I finally understood the android cl
 date: 2026-08-30
 tags:
     - android
-    - archlinux
     - rust
 ---
 

@@ -2,7 +2,7 @@
 {{ if ne .IsPage true }} 
 <div class="bio-container">
     <div class="bio">
-        <img class="avatar" alt="avatar" src="{{ "/images/avatar.webp" | relURL }}" />
+        <a  href="/"><img class="avatar" alt="avatar" src="{{ "/images/avatar.webp" | relURL }}" /></a>
         <div class="content">
             <h5>{{ .Site.Params.bio | markdownify }}</h5>
             <div class="social">

@@ -2,24 +2,19 @@ languageCode = 'en-US'
 title = 'xnacly - blog'
 
 [[menus.main]]
-name = '~'
-pageRef = '/'
+name = 'archive.html'
+pageRef = '/posts'
 weight = 10
 
 [[menus.main]]
-name = '~/archive.html'
-pageRef = '/posts'
+name = 'books.html'
+pageRef = '/books'
 weight = 20
 
 [[menus.main]]
-name = '~/books.html'
-pageRef = '/books'
-weight = 30
-
-[[menus.main]]
-name = '~/about.html'
+name = 'about.html'
 pageRef = '/about'
-weight = 40
+weight = 30
 
 [module]
   [module.hugoVersion]

@@ -16,12 +16,29 @@
   --info-dark: #455355;
   --tip: #8294ad;
   --tip-dark: #455355;
-  --code-bg: #ede8dd;
+  --code-bg: #faf4ed;
 }
 
 * {
   box-sizing: border-box;
   word-break: all;
+}
+
+/* fixes iframe forcing full page scroll */
+iframe {
+  max-width: 100%;
+}
+
+/* fixes table forcing full page scroll */
+.table {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: scroll;
+}
+
+/* fixes long math forcing full page scroll */
+mjx-container {
+  overflow: scroll;
 }
 
 /* this should fix the ios mobile code blog font size bug
@@ -82,6 +99,16 @@ nav:not(#TableOfContents) {
     flex-direction: column;
     justify-content: center;
     align-items: center;
+
+    a:has(img):hover,
+    a:has(img):focus {
+      background-color: transparent;
+    }
+
+    a:has(img)::before,
+    a:has(img)::after {
+      content: none;
+    }
 
     img.avatar {
       height: 5rem;
@@ -166,6 +193,11 @@ nav:not(#TableOfContents) {
     h4 {
       margin: 0;
       margin-left: var(--spacing);
+
+      a::before,
+      a::after {
+        content: "";
+      }
     }
 
     .tags {
@@ -173,9 +205,14 @@ nav:not(#TableOfContents) {
     }
 
     .tags a {
+      font-size: 10pt;
       color: var(--text-secondary);
       padding: calc(var(--spacing) / 4);
       text-decoration: none;
+    }
+
+    .tags a:hover {
+      background: transparent;
     }
   }
 }
@@ -193,6 +230,7 @@ nav:not(#TableOfContents) {
       color: var(--text-secondary);
     }
   }
+
   a:has(img):hover,
   a:has(img):focus {
     background-color: transparent;
@@ -306,6 +344,7 @@ nav:not(#TableOfContents) {
 
     .highlight {
       padding-right: calc(var(--spacing) / 4);
+
       background-color: var(--code-bg);
       overflow-x: auto;
 
