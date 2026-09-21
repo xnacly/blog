@@ -1,22 +1,22 @@
 :root {
   --spacing: 12px;
-  --background: #f5efe6; 
-  --background-darker: #f2eae1; 
-  --background-lighter: #ede8dd; 
-  --primary: #c499b8; 
-  --primary-darker: #a897b8; 
-  --primary-dark: #576869; 
-  --secondary: #a897b8; 
+  --background: #f5efe6;
+  --background-darker: #f2eae1;
+  --background-lighter: #ede8dd;
+  --primary: #c499b8;
+  --primary-darker: #a897b8;
+  --primary-dark: #576869;
+  --secondary: #a897b8;
   --secondary-transparent: #a897b810;
-  --text: #2b3034; 
-  --text-secondary: #576869; 
-  --warning: #c4aa80; 
-  --warning-dark: #c69883; 
-  --info: #719f96; 
-  --info-dark: #455355; 
-  --tip: #8294ad; 
-  --tip-dark: #455355; 
-  --code-bg: #ede8dd; 
+  --text: #2b3034;
+  --text-secondary: #576869;
+  --warning: #c4aa80;
+  --warning-dark: #c69883;
+  --info: #719f96;
+  --info-dark: #455355;
+  --tip: #8294ad;
+  --tip-dark: #455355;
+  --code-bg: #ede8dd;
 }
 
 * {
@@ -192,6 +192,15 @@ nav:not(#TableOfContents) {
       content: "> ";
       color: var(--text-secondary);
     }
+  }
+  a:has(img):hover,
+  a:has(img):focus {
+    background-color: transparent;
+  }
+
+  a:has(img)::before,
+  a:has(img)::after {
+    content: none;
   }
 
   .projects {
