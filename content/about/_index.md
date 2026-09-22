@@ -8,11 +8,6 @@ forget to commit.
 
 {{<rawhtml>}}
 <div style="display: flex; justify-content: center; gap: 0.5rem">
-    <a href="https://webring.xxiivv.com/xnacly" target="_blank" rel="noopener">
-        <img width="64" height="64" src="https://webring.xxiivv.com/icon.black.svg" alt="XXIIVV webring"/>
-    </a>
-</div>
-<div style="display: flex; justify-content: center; gap: 0.5rem">
     <img src="/images/badges/badge.gif"/>
     <img src="/images/badges/linux.gif"/>
     <img src="/images/badges/antiNFT.gif"/>
