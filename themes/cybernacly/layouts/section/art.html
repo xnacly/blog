@@ -1,0 +1,50 @@
+{{ define "main" }}
+    <div class="centered">
+        {{.Content}}
+        <div>
+            <p><em>I did these for my about page :)</em></p>
+            <img src="/art/xnacly.gif"/>
+            <img width="88" height="31" src="/art/lobsters.gif"/>
+        </div>
+
+
+        {{ partial "captioned" (slice "/art/teo.png" "My selfinsert into roy in the intro of the it crowd") }}
+
+        <div>
+            {{ partial "captioned" (slice "/art/claude-ze-fucker.png" "For when i was writing my simple armv7 emulator and was fed up with ai news") }}
+            {{ partial "captioned" (slice "/art/android.png" "Struggling with the idiotic android cli and how the aur sdk packages ship idiotic permissions") }}
+            {{ partial "captioned" (slice "/art/stinkarm.png" "Just a pun on the emulators name and how ARM originated at acorn") }}
+        </div>
+
+        <div style="display:flex">
+            {{ partial "captioned" (slice "/art/milogo.png" "I started at my current job and did a pixelart of the applications icon") }}
+            {{ partial "captioned" (slice "/art/deltaskip.png" "I did some performance optimisation by sending only the needed 'delta', did a pixel art for the pull requests") }}
+        </div>
+
+        <div style="display:flex">
+            {{ partial "captioned" (slice "/art/notajournal.png" "An icon for my girlfriends handdesigned journals") }}
+            {{ partial "captioned" (slice "/art/typewritten.png" "Another icon, this one for an author collective my girlfriend is working on") }}
+        </div>
+
+        <p> A collection of icons i made for my fork of <a href="https://github.com/tsora1603/pixora-icons">tsora1603/pixora-icons</a>:</p>
+        <div style="display:flex">
+            {{ partial "captioned" (slice "/art/com.mitchellh.ghostty.png" "ghostty") }}
+            {{ partial "captioned" (slice "/art/org.pwmt.zathura.png" "zathura") }}
+            {{ partial "captioned" (slice "/art/tor-browser.png" "tor browser") }}
+            {{ partial "captioned" (slice "/art/nvim.png" "nvim") }}
+        </div>
+
+    <figure>
+        <img height="900" src="/art/kubis.gif" alt="An animated minecraft world for a project of a friend of mine"/>
+        <figcaption>An animated minecraft world for a project of a friend of mine</figcaption>
+    </figure>
+        {{ partial "captioned" (slice "/art/kurbis.png" "The corresponding logo") }}
+    </div>
+{{ end }}
+
+{{ define "_partials/captioned" }}
+    <figure>
+        <img src="{{ index . 0 }}" alt="{{ index . 1 }}"/>
+        <figcaption>{{ index . 1 }}</figcaption>
+    </figure>
+{{ end }}

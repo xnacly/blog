@@ -491,6 +491,8 @@ summary {
   }
 }
 
+
+
 summary::-webkit-details-marker {
   display: none;
   /* Chrome/Safari */
