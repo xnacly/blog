@@ -459,6 +459,23 @@ a:hover {
   color: var(--background);
 }
 
+/* linked figures on the art page: the whole figure is the link, no brackets or highlight */
+.art figure a {
+  display: block;
+  color: inherit;
+}
+.art figure a:before,
+.art figure a:after {
+  content: none;
+}
+.art figure a:hover {
+  background-color: transparent;
+  color: inherit;
+}
+.art figure a:hover figcaption {
+  text-decoration: underline;
+}
+
 h1 a,
 h2 a,
 h3 a,
