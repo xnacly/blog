@@ -1,0 +1,5 @@
+{{/* stopgap until chroma ships a release with the garden lexer, delete then */}}
+<div class="codeblock">
+  <span class="codeblock-type">{{ upper .Type }}</span>
+</div>
+{{ transform.Highlight .Inner "rust" .Options }}
