@@ -1,6 +1,6 @@
 ---
-title: "Purple Gardens Register Allocator"
-summary: "schalom"
+title: "An ode to livelyness analysis"
+summary: "Livelyness analysis performed on strict block based IR with ssa form instructions"
 date: 2026-10-22T15:10:03+02:00
 draft: true
 tags:
@@ -8,14 +8,15 @@ tags:
   - pldev
 ---
 
-> This is sort of a mix between a dev log and an explaination how purple gardens
-> xralloc2 register allocator works and how it is integrated into its pipeline.
+> Or a loveletter? Read this while listening to Ode to Joy
 
 Register allocation is assigning the unlimited amount of virtual registers to
 the limited set of storage resources hardware has, specifically the gprs
 (general purpose registers), the fprs (floating point registers) and the stack
 (see [CPU Registers x86](https://wiki.osdev.org/CPU_Registers_x86) for an
-examplary overview).
+examplary overview). The first step in this odeal is livelyness analsis.
+
+# A garden(ing) example
 
 THe simplest, yet somewhat non trivial example would be:
 
@@ -57,7 +58,7 @@ following, optimised immediate representation (using `-I`) [^optimised]:
 ```llvm
 ```
 
-## PUrple garden IR structure and notation
+# PUrple garden IR structure and notation
 
 Purple gardens immediate representation is [static single assigment
 (SSA)](https://en.wikipedia.org/wiki/Static_single-assignment_form) form based,
@@ -126,9 +127,9 @@ pub enum Terminator {
 
 Pretty easy right?
 
-## Values and their lifetimes
+# Values and their lifetimes
 
-The first step to do reg alloc, is livelyness analsis.
+The first step to do reg alloc,
 
 LEts look at the previous IR example, but this time with virtual register
 lifetime annotations (when the cli is invoked with `-II`):
