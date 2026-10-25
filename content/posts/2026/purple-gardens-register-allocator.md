@@ -55,19 +55,6 @@ following, optimised immediate representation (using `-I`) [^optimised]:
     arithmetics, tailcalls and removed blocks just used for indirect returns
 
 ```llvm
-;; f
-fn f1(%v0:Int, %v1:Int, %v2:Int) -> Int {
-        b0(%v0, %v1, %v2):
-                %v4:Bool = ILt %v1, 1
-                br %v4, b1(%v0, %v1, %v2), b2(%v0, %v1, %v2)
-        b1(%v0, %v1, %v2):
-                %v5:Int = IAdd %v0, %v2
-                ret %v5
-        b2(%v0, %v1, %v2):
-                %v7:Int = ISub %v1, 1
-                %v8:Int = IMul %v2, %v1
-                tail f1(%v0, %v7, %v8)
-}
 ```
 
 ## PUrple garden IR structure and notation
@@ -147,27 +134,17 @@ LEts look at the previous IR example, but this time with virtual register
 lifetime annotations (when the cli is invoked with `-II`):
 
 ```llvm
-;; f                                   %v0 %v1 %v2 %v4 %v5 %v7 %v8
-b0(%v0, %v1, %v2):                     ;|   |   |
-    %v4:Bool = ILt %v1, 1              ;|   |   |   |
-    br %v4, b1(%v0, %v1, %v2), b2(...) ;|   |   |   |
-b1(%v0, %v1, %v2):                     ;|   |   |
-    %v5:Int = IAdd %v0, %v2            ;|   |   |       |
-    ret %v5                            ;|   |   |       |
-b2(%v0, %v1, %v2):                     ;|   |   |
-    %v7:Int = ISub %v1, 1              ;|   |   |           |
-    %v8:Int = IMul %v2, %v1            ;|   |   |           |   |
-    tail f1(%v0, %v7, %v8)
 ```
 
-This display enables a visual understanding of the livetimes of each value:
+This display enables a visual understanding of the livetimes of each value,
+encoded as lo for start, and hi for last, both are ir instr indizes:
 
 | value | lo  | hi  |
 | ----- | --- | --- |
-| v0    | 0   | 8   |
-| v1    | 1   | 8   |
-| v2    | 2   | 8   |
-| v4    | 4   | 4   |
-| v5    | 5   | 5   |
-| v7    | 7   | 8   |
-| v8    | 8   | 8   |
+| v0    | 0   | 6   |
+| v1    | 0   | 5   |
+| v2    | 0   | 5   |
+| v4    | 0   | 1   |
+| v5    | 2   | 3   |
+| v7    | 4   | 6   |
+| v8    | 5   | 6   |
