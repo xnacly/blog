@@ -1,6 +1,6 @@
 ---
 title: "An ode to livelyness analysis"
-summary: "Livelyness analysis performed on strict block based IR with ssa form instructions"
+summary: "Liveness analysis performed on strict block based IR with ssa form instructions"
 date: 2026-10-22T15:10:03+02:00
 draft: true
 tags:
@@ -8,7 +8,9 @@ tags:
   - pldev
 ---
 
-> Or a loveletter? Read this while listening to Ode to Joy
+> Or a loveletter? Read this while listening to Ode to Joy, also look at this awesome pixelart i did just for this article:
+>
+> ![livelyness analysis](/livelyness/icon.png)
 
 Register allocation is assigning the unlimited amount of virtual registers to
 the limited set of storage resources hardware has, specifically the gprs
@@ -149,3 +151,90 @@ encoded as lo for start, and hi for last, both are ir instr indizes:
 | v5    | 2   | 3   |
 | v7    | 4   | 6   |
 | v8    | 5   | 6   |
+
+# A short but sweet implementation:
+
+With that out of the way the algorithm amounts to a simple:
+
+1. walk blocks
+2. visit terminator, observe all virtual register usages  
+3. visit instructions in reverse, observe all virtual register definition and usages
+4. visit parameters to block, observe each
+
+## Observing
+
+Where observing is defined as:
+
+- with tuple `(lo,hi)` and `pos`
+- if `hi==0`; set `hi=pos`
+- `lo=pos`
+
+In oxidised terms: 
+
+```rust
+/// observer Id := (lo,hi), always updates lo, only fills hi, if previously unset
+fn observe<V: Allocator>(out: &mut Vec<(u32, u32), V>, id: Id, pos: u32) {
+    let idx = id.0 as usize;
+    if idx >= out.len() {
+        out.resize(idx + 1, UNSET);
+    }
+    let e = &mut out[idx];
+    if e.1 == 0 {
+        e.1 = pos;
+    }
+    e.0 = pos;
+}
+```
+
+## Helpers to help with defs and usages:
+
+<!-- TODO: add def_of, for_each etc here -->
+
+## Fully rusted:
+
+A few quick context injectors:
+
+- out is a reusable Vec allocated in the V allocator, thats why its reset and resized
+- UNSET is used as the default empty value
+- `for_each_use_of_term` and  `for_each_use_of_instr` calls Fn on each use of a virtual register in the given IR concept
+- `Func::def_of` returns a definition of a virtual register, if it has one
+
+```rust
+pub fn live_set_into<V: Allocator>(&self, out: &mut Vec<(u32, u32), V>) {
+    const UNSET: (u32, u32) = (u32::MAX, 0u32);
+
+    out.clear();
+    out.resize(self.next_id() as usize, UNSET);
+
+    // observe defined as before
+
+
+    let mut base = 0;
+    for block in self.blocks.iter().filter(|b| !b.tombstone) {
+        let block_offset = block.instructions.len();
+        let offset = base;
+        if let Some(term) = &block.term {
+            self.for_each_use_of_term(term, |id| {
+                // term is instruction count +1
+                observe(out, id, (offset + block_offset + 1) as u32)
+            });
+        }
+
+        for (i, instr) in block.instructions.iter().enumerate().rev() {
+            // +1, so it cant start at 0, since thats where the params start :)
+            let pos = (base + 1 + i) as u32;
+            self.for_each_use_of_instr(instr, |id| observe(out, id, pos));
+            if let Some(def) = Func::def_of(instr) {
+                observe(out, def, pos)
+            }
+        }
+
+        for &p in self.params(block.params) {
+            observe(out, p, base as u32);
+        }
+
+        // params + instructions + terminator
+        base += block_offset + 2;
+    }
+}
+```
