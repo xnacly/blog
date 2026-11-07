@@ -4,7 +4,7 @@
         {{ .Content }}
 
         <h3>Papers</h3>
-        {{ range .Site.Data.papers.papers }}
+        {{ range hugo.Data.papers.papers }}
             <div class="paper">
                 <h4>
                     <a href="{{ .link }}">{{.title}}</a>
@@ -27,7 +27,7 @@
                 </tr>
             </thead>
             <tbody>
-            {{ range .Site.Data.projects.projects }}
+            {{ range hugo.Data.projects.projects }}
                 <tr>
                     <td class="name">
                         <a href="{{ .url }}" rel="me" target="_blank"><span>{{ .title }}</span></a>

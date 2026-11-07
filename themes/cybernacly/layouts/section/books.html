@@ -4,7 +4,7 @@
         {{ .Content }}
 
         <div class="books">
-        {{ range .Site.Data.books }}
+        {{ range hugo.Data.books }}
             <div class="book">
                 <img src="{{ .img }}"/>
                 <div>
