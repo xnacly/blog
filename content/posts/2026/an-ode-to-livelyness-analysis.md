@@ -11,6 +11,11 @@ tags:
 > Or a loveletter? Read this while listening to Ode to Joy, also look at this awesome pixelart i did just for this article:
 >
 > ![livelyness analysis](/livelyness/icon.png)
+> _its analyzing a life_ 🤓
+
+I am currently working on register allocation for both my register based
+bytecode virtual machine and my x86 just in time compiler, both for my
+programming language [purple-garden](https://github.com/xnacly/purple-garden).
 
 Register allocation is assigning the unlimited amount of virtual registers to
 the limited set of storage resources hardware has, specifically the gprs
@@ -58,6 +63,19 @@ following, optimised immediate representation (using `-I`) [^optimised]:
     arithmetics, tailcalls and removed blocks just used for indirect returns
 
 ```llvm
+// f
+fn f1(%v0:Int, %v1:Int, %v2:Int) -> Int {
+        b0(%v0, %v1, %v2):
+                %v4:Bool = ILt %v1, 1
+                br %v4, b1(%v0, %v1, %v2), b2(%v0, %v1, %v2)
+        b1(%v5, %v6, %v7):
+                %v8:Int = IAdd %v5, %v7
+                ret %v8
+        b2(%v9, %v10, %v11):
+                %v13:Int = ISub %v10, 1
+                %v14:Int = IMul %v11, %v10
+                tail f1(%v9, %v13, %v14)
+}
 ```
 
 # PUrple garden IR structure and notation
@@ -129,28 +147,44 @@ pub enum Terminator {
 
 Pretty easy right?
 
-# Values and their lifetimes
-
-The first step to do reg alloc,
+# Virtual registers / Values and their lifetimes
 
 LEts look at the previous IR example, but this time with virtual register
 lifetime annotations (when the cli is invoked with `-II`):
 
 ```llvm
+fn f1(%v0:Int, %v1:Int, %v2:Int) -> Int {             %v0 %v1 %v2 %v4 %v5 %v7 %v8 %v9 %v10 %v11 %v13 %v14
+    b0(%v0, %v1, %v2):                                |   |   |
+        %v4:Bool = ILt %v1, 1                         |   |   |   |
+        br %v4, b1(%v0, %v1, %v2), b2(%v0, %v1, %v2)  |   |   |   |
+    b1(%v5, %v6, %v7):                                                |   |
+        %v8:Int = IAdd %v5, %v7                                       |   |   |
+        ret %v8                                                               |
+    b2(%v9, %v10, %v11):                                                          |   |    |
+        %v13:Int = ISub %v10, 1                                                   |   |    |    |
+        %v14:Int = IMul %v11, %v10                                                |   |    |    |    |
+        tail f1(%v9, %v13, %v14)                                                  |             |    |
+}
 ```
 
 This display enables a visual understanding of the livetimes of each value,
-encoded as lo for start, and hi for last, both are ir instr indizes:
+encoded as lo for start, and hi for last, both are ir instr indizes, the
+following enables a non visual understanding:
 
 | value | lo  | hi  |
 | ----- | --- | --- |
-| v0    | 0   | 6   |
-| v1    | 0   | 5   |
-| v2    | 0   | 5   |
-| v4    | 0   | 1   |
-| v5    | 2   | 3   |
-| v7    | 4   | 6   |
-| v8    | 5   | 6   |
+| %v0   | 0   | 2   |
+| %v1   | 0   | 2   |
+| %v2   | 0   | 2   |
+| %v4   | 1   | 2   |
+| %v5   | 3   | 4   |
+| %v7   | 3   | 4   |
+| %v8   | 4   | 5   |
+| %v9   | 6   | 9   |
+| %v10  | 6   | 8   |
+| %v11  | 6   | 8   |
+| %v13  | 7   | 9   |
+| %v14  | 8   | 9   |
 
 # A short but sweet implementation:
 
@@ -188,16 +222,148 @@ fn observe<V: Allocator>(out: &mut Vec<(u32, u32), V>, id: Id, pos: u32) {
 
 ## Helpers to help with defs and usages:
 
-<!-- TODO: add def_of, for_each etc here -->
+### Extracting definitions 
 
-## Fully rusted:
+What it says, `Func::def_of` returns a definition of a virtual register, if
+`instr` has one:
+
+```rust
+impl Func<'_> {
+    #[must_use]
+    pub fn def_of(instr: &Instr<'_>) -> Option<Id> {
+        match instr {
+            Instr::Alloc { dst, .. }
+            | Instr::Load { dst, .. }
+            | Instr::AddrOf { dst, .. }
+            | Instr::Bin { dst, .. }
+            | Instr::BinImm { dst, .. }
+            | Instr::LoadConst { dst, .. }
+            | Instr::Call { dst, .. }
+            | Instr::Sys { dst, .. }
+            | Instr::Cast { dst, .. }
+            | Instr::Lookup { dst, .. }
+            | Instr::Assert { dst, .. } => Some(dst.id),
+            Instr::Store { .. } | Instr::Noop => None,
+        }
+    }
+}
+```
+
+
+### Calling f for each usage of value in an instruction
+
+What it says, calling f for each value usage in an instruction
+
+```rust
+pub fn for_each_use_of_instr(&self, instr: &Instr<'_>, mut f: impl FnMut(Id)) {
+    match instr {
+        Instr::Bin { lhs, rhs, .. } => {
+            f(*lhs);
+            f(*rhs);
+        }
+        Instr::BinImm { lhs, .. } => f(*lhs),
+        Instr::Call { args, .. } | Instr::Sys { args, .. } => {
+            for &a in self.params(*args) {
+                f(a);
+            }
+        }
+        Instr::Cast { from, .. } => f(from.id),
+        Instr::Lookup { subject, .. } => f(*subject),
+        Instr::Store { src, base, .. } => {
+            f(*src);
+            f(*base);
+        }
+        Instr::Assert { cond, .. } => f(*cond),
+        Instr::Load { base, .. } | Instr::AddrOf { base, .. } => f(*base),
+        Instr::LoadConst { .. } | Instr::Noop | Instr::Alloc { .. } => {}
+    }
+}
+```
+
+### Calling f for each usage of value in a terminator
+
+What it says, calling f for each value usage in a terminator
+
+```rust
+pub fn for_each_use_of_term(&self, term: &Terminator, mut f: impl FnMut(Id)) {
+    match term {
+        Terminator::Return {
+            value: Some(id), ..
+        } => f(*id),
+        Terminator::Return { value: None, .. } => {}
+        Terminator::Jump { params, .. } => {
+            for &p in self.params(*params) {
+                f(p);
+            }
+        }
+        Terminator::Tail { args, .. } => {
+            for &a in self.params(*args) {
+                f(a);
+            }
+        }
+        Terminator::Switch {
+            subject,
+            cases,
+            default: (_, default_params),
+            ..
+        } => {
+            f(*subject);
+            for case in self.cases(*cases) {
+                for &p in self.params(case.target.1) {
+                    f(p);
+                }
+            }
+            for &p in self.params(*default_params) {
+                f(p);
+            }
+        }
+        Terminator::Branch {
+            cond,
+            yes: (_, yes_params),
+            no: (_, no_params),
+            ..
+        } => {
+            f(*cond);
+            for &p in self.params(*yes_params) {
+                f(p);
+            }
+            for &p in self.params(*no_params) {
+                f(p);
+            }
+        }
+        Terminator::BranchCmpImm {
+            lhs,
+            yes: (_, yes_params),
+            no: (_, no_params),
+            ..
+        }
+        | Terminator::BranchCmp {
+            lhs,
+            yes: (_, yes_params),
+            no: (_, no_params),
+            ..
+        } => {
+            f(*lhs);
+            if let Terminator::BranchCmp { rhs, .. } = term {
+                f(*rhs);
+            }
+            for &p in self.params(*yes_params) {
+                f(p);
+            }
+            for &p in self.params(*no_params) {
+                f(p);
+            }
+        }
+    }
+}
+```
+
+## Fully rusted together:
 
 A few quick context injectors:
 
 - out is a reusable Vec allocated in the V allocator, thats why its reset and resized
 - UNSET is used as the default empty value
-- `for_each_use_of_term` and  `for_each_use_of_instr` calls Fn on each use of a virtual register in the given IR concept
-- `Func::def_of` returns a definition of a virtual register, if it has one
 
 ```rust
 pub fn live_set_into<V: Allocator>(&self, out: &mut Vec<(u32, u32), V>) {
@@ -207,7 +373,6 @@ pub fn live_set_into<V: Allocator>(&self, out: &mut Vec<(u32, u32), V>) {
     out.resize(self.next_id() as usize, UNSET);
 
     // observe defined as before
-
 
     let mut base = 0;
     for block in self.blocks.iter().filter(|b| !b.tombstone) {
@@ -238,3 +403,5 @@ pub fn live_set_into<V: Allocator>(&self, out: &mut Vec<(u32, u32), V>) {
     }
 }
 ```
+
+# Interactive examples
