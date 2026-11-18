@@ -1,5 +1,5 @@
 ---
-title: "Making array indexing a bit less costly for purple garden"
+title: "Making array indexing cheaper in purple gardens VM and JIT"
 summary: "Using twos complement to only assert once per idx attempt, instead of twice"
 date: 2026-11-15
 draft: true
@@ -8,7 +8,7 @@ tags:
   - pldev
 ---
 
-Arrays must be indexable, this index has to adhere to being `0<=i<=|a|`; where
+Arrays must be indexable, this index has to adhere to being `0<=i<|a|`; where
 `||` is the length of the array `a`. Checking this is regarded as a bounds
 check ([wikipedia -Bounds
 checking](https://en.wikipedia.org/wiki/Bounds_checking))
@@ -66,7 +66,11 @@ The attentive reader will have realised this produces 8 instructions per index,
 which for the bytecode backend, where dispatch dominates, is very costly, even
 more so than in the x86 backend, where it still isnt free though.
 
-## In the IR
+# Simplifying two boundschecks into one
+
+<!-- TODO: write about two complements and how to merge 0<=i<|a| into a single compare -->
+
+# In the IR
 
 Thus, let me introduce the `Index` ir instruction, merging the bounds check,
 offset calculation, offset usage and loading the result at said offset into a
@@ -83,9 +87,11 @@ fn f1(%v0:Array<Int>, %v1:Int) -> Int {
 }
 ```
 
-## In the bytecode virtual machine
+# In the bytecode virtual machine
 
 Previously, the ir lowered to bytecode instructions:
+
+<!-- TODO: annotate bytecode-->
 
 ```asm
 00000000 <at>:
@@ -101,8 +107,8 @@ Previously, the ir lowered to bytecode instructions:
     ; removed epilogue
 ```
 
-Now its a single instruction, meaning we reduced our instruction count by 6,
-cutting the dispatch cost to a single instruction 🤓:
+Now its two instructions, meaning we reduced our instruction count by 6,
+cutting the dispatch cost by a lot 🤓:
 
 ```asm
 00000000 <at>:
@@ -112,17 +118,7 @@ cutting the dispatch cost to a single instruction 🤓:
     ; removed epilogue
 ```
 
-You know, worst case dispatch cost (randomized) is ~35 cycles /
-8.9ns, while perfect dispatch (only NOP) is around 3 cycles / 0.71ns:
-
-| Benchmark                | Time    | Per op  | Cycles per op |
-| ------------------------ | ------- | ------- | ------------- |
-| `bench_random_dispatch`  | 85.8 ms | 8.58 ns | ~35           |
-| `bench_uniform_dispatch` | 7.14 ms | 0.71 ns | ~3            |
-
-Meaning approximately, for the worst predicted dispatch we reduced the cost by
-210 cycles / 52ns or for the best case reduced it by 18cycles / 4.26ns PER
-index instruction.
+## Being sidetracked: Dispatch here, dispatch there
 
 Btw, purple garden uses the
 [become](https://doc.rust-lang.org/stable/std/keyword.become.html) proposal for
@@ -198,9 +194,282 @@ lea    r8,[rip+TABLE]
 jmp    QWORD PTR [r8+rax*8]            ; become TABLE[tag](vm, code, pc, op)
 ```
 
-## In the x86 jit backend
+## Generating op codes
+
+That aside, lets look at the Op code and its packed representation
+
+Lets not get sidetracked as before again, but i use a macro to
+generate the rusty representation in the form of an enum and its tag, which
+must fit into 6 bits:
+
+```rust
+macro_rules! ops {
+    (
+        // match a single definition
+        $(
+            // meta tags like doc comments, which are just #[doc]
+            $(#[$meta:meta])*
+
+            // definition and tag name
+            $name:ident
+
+            // body delimited with {}, matches field containers, is optional via ? to support Halt
+            // and Nop (bodyless variants)
+            $({ $($body:tt)* })?
+        ),*
+        $(,)?
+    ) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Op {
+             $( $(#[$meta])* $name $({ $($body)* })? ),*
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(u8)]
+        pub enum Tag {
+            $($name),*
+        }
+
+        impl Tag {
+            pub const COUNT: usize = [$(Tag::$name),*].len();
+        }
+
+        /// static assertion since tag is 6 bits, meaning 2^6=64 op codes can be represented
+        const _: () = assert!(Tag::COUNT <= 64);
+
+        impl Op {
+            pub const fn tag(&self) -> Tag {
+                match self {
+                    $(Self::$name {..} => Tag::$name),*
+                }
+            }
+        }
+    }
+}
+```
+
+So that macro is used to generate the opcode, lets look at IAdd, Idx and Nop, just so you get the gist:
+
+```rust
+ops! {
+     IAdd {
+        dst: u8,
+        lhs: u8,
+        rhs: u8,
+    },
+    // [...]
+
+    /// `r[dst] = r[target] + 8 + r[idx] * stride`, the address of element idx. Traps with
+    /// [`crate::Anomaly::IndexOutOfBounds`] unless `0 <= r[idx] < len`, len being the array's first
+    /// word.
+    Idx {
+        dst: u8,
+        target: u8,
+        idx: u8,
+        /// distance between elements of array, so addr = arr + 8 + idx * stride
+        stride: u16,
+    },
+    
+    // [...]
+    Nop,
+}
+```
+
+## Being sidetracked v2: Packing and unpacking op codes
+
+Since every opcode is a fixed length (32bits), i decided to make the tag 6
+bits, fitting 2^6 (64) op code variants or kinds. Every register I made 5 bits,
+since the purple garden virtual machine has 32 registers. So something like
+`IAdd` is the op class `rrr`, since it uses three registers, meaning i pack it
+using a macro helper:
+
+```rust
+/// encode different ops into the new packed format, operator classes are the prefix of the macro
+/// invocation
+///
+/// Every opcode starts with tag6 at 0..5
+///
+/// r        := r5
+/// rr       := r5 r5
+/// rrr      := r5 r5 r5
+/// rrri11   := r5 r5 r5 imm11
+/// rri16    := dst5 lhs5 imm16
+/// ri21     := dst5 imm21
+/// ru21     := r5 idx21
+/// t16      := target16
+/// u26      := func26
+/// rt16     := cond5 target16
+/// rrt16    := lhs5 rhs5 target16
+/// ri5t16   := lhs5 imm5 target16
+/// rru16    := r5 r5 offset16
+/// rk1u20   := subject5 kind1 table20
+/// rrk1u15  := dst5 subject5 kind1 table15
+/// rk2u3u16 := dst5 kind2 align_log(2)3 size16
+/// u5u16    := argc5 idx16
+/// u16k1    := idx16 returns_double1
+macro_rules! encode_packed {
+    // [...]
+    (rrr,$r1:expr,$r2:expr,$r3:expr) => {
+        ($r1 as u32) << 6 | ($r2 as u32) << 11 | ($r3 as u32) << 16
+    };
+    // [...]
+}
+```
+
+
+And unpack it using a method on the `Packed` structure:
+
+```rust{hl_lines=["35-38"]}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Packed(u32);
+
+impl Packed {
+    /// [0..5]
+    #[inline(always)]
+    pub fn tag(&self) -> super::Tag {
+        let tag_raw = (self.0 & 0b0011_1111) as u8;
+        unsafe { std::mem::transmute::<u8, super::Tag>(tag_raw) }
+    }
+
+    #[inline(always)]
+    pub fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+
+    /// `width` bits starting at bit `at`
+    #[inline(always)]
+    fn bits(self, at: u32, width: u32) -> u32 {
+        (self.0 >> at) & ((1 << width) - 1)
+    }
+
+    #[inline(always)]
+    pub fn r(self) -> u8 {
+        self.bits(6, 5) as u8
+    }
+
+    #[inline(always)]
+    pub fn rr(self) -> (u8, u8) {
+        (self.r(), self.bits(11, 5) as u8)
+    }
+
+    #[inline(always)]
+    pub fn rrr(self) -> (u8, u8, u8) {
+        let (r1, r2) = self.rr();
+        (r1, r2, self.bits(16, 5) as u8)
+    }
+}
+```
+
+So put together the easiest case (`IAdd`) is encoded:
+
+```rust
+impl super::Op {
+    pub fn encode(self) -> Packed {
+        Packed(
+            self.tag() as u32
+                | match self {
+                    // none
+                    crate::op::Op::Ret | crate::op::Op::Halt | crate::op::Op::Nop => 0,
+                    // rrr
+                    crate::op::Op::IAdd { dst, lhs, rhs } => encode_packed!(rrr, dst, lhs, rhs),
+
+                    // [...] all the other classes
+                },
+        )
+    }
+}
+```
+
+And decoded:
+
+```rust
+pub(super) unsafe fn i_add<const B: bool>(
+    vm: V,
+    code: *const Packed,
+    pc: usize,
+    op: Packed,
+) -> usize {
+    unsafe {
+        let (dst, lhs, rhs) = op.rrr();
+        let l = r!(vm, lhs).as_int();
+        let r = r!(vm, rhs).as_int();
+        r_mut!(vm, dst) = Value::from(l + r);
+        next!(vm, code, pc.wrapping_add(1))
+    }
+}
+```
+
+## Now: the idx instruction
+
+Previously we saw how the rust enum representing the idx opcode is laid out,
+now the packed version, same as before we have a macro for packing and a method
+for unpacking. Contrary to `IAdd`, `Idx`'s class is `rrri11`, since it needs
+three registers and a 11 bit immediate value:
+
+```rust
+macro_rules! encode_packed {
+    // [...]
+    (rrr,$r1:expr,$r2:expr,$r3:expr) => {
+        ($r1 as u32) << 6 | ($r2 as u32) << 11 | ($r3 as u32) << 16
+    };
+    (rrri11,$r1:expr,$r2:expr,$r3:expr,$imm:expr) => {
+        encode_packed!(rrr, $r1, $r2, $r3) | ($imm as u32) << 21
+    };
+    // [...]
+}
+```
+
+It is decoded or unpacked with a method of the same name on `Packed`:
+
+ 
+```rust{hl_lines=["27-30"]}
+impl Packed {
+    // [...]
+
+    /// `width` bits starting at bit `at`
+    #[inline(always)]
+    fn bits(self, at: u32, width: u32) -> u32 {
+        (self.0 >> at) & ((1 << width) - 1)
+    }
+
+    #[inline(always)]
+    pub fn r(self) -> u8 {
+        self.bits(6, 5) as u8
+    }
+
+    #[inline(always)]
+    pub fn rr(self) -> (u8, u8) {
+        (self.r(), self.bits(11, 5) as u8)
+    }
+
+    #[inline(always)]
+    pub fn rrr(self) -> (u8, u8, u8) {
+        let (r1, r2) = self.rr();
+        (r1, r2, self.bits(16, 5) as u8)
+    }
+
+    #[inline(always)]
+    pub fn rrri11(self) -> (u8, u8, u8, u16) {
+        let (r1, r2, r3) = self.rrr();
+        (r1, r2, r3, (self.0 >> 21) as u16)
+    }
+}
+```
+
+## Handling in the handler
+
+<!-- TODO: write about the handler -->
+
+# In the x86 jit backend
 
 Whereas previously this required a bucketload of instructions:
+
+> Btw thank [samuelscheit](https://samuelscheit.com/) for the x86 assembly
+> annotations, he was buggering me how no one understands this without comments
+> :)
+
+<!-- TODO: annotate asm -->
 
 ```nasm
 0000000000000000 <jit_at>:
@@ -257,7 +526,8 @@ We now instead lower the `Index` instruction to:
 
 # Benchmark(s)
 
-Our example is a pretty uncomplicated heavy array indexing focused benchmark:
+Our example is a pretty uncomplicated heavy array indexing focused benchmark,
+which is, ofc a microbenchmark:
 
 ```garden
 # Sums an array literal in a tight recursive loop.
