@@ -66,9 +66,40 @@ The attentive reader will have realised this produces 8 instructions per index,
 which for the bytecode backend, where dispatch dominates, is very costly, even
 more so than in the x86 backend, where it still isnt free though.
 
-# Simplifying two boundschecks into one
+# Simplifying two bounds checks into one
 
-<!-- TODO: write about two complements and how to merge 0<=i<|a| into a single compare -->
+<!--TODO: put somethin here-->
+
+## MAH 2complements
+
+For the sake of explaining the simplification, I will not show this with 32 bit
+integers, but rather with 8 bit. In general, fixed point integers are
+represented with the [two
+complements](https://en.wikipedia.org/wiki/Two%27s_complement) method, meaning
+you have a numeric value assigned to each bit, for instance 12 is formed by
+setting the bits for 4 and 8, but not for 1 and 2, in a table it would be:
+
+| two complements | 2^7 | 2^6 | 2^5 | 2^4 | 2^3 | 2^2 | 2^1 | 2^0 |
+| --------------- | --- | --- | --- | --- | --- | --- | --- | --- |
+| decimal         | 128 | 64  | 32  | 16  | 8   | 4   | 2   | 1   |
+| -               |     |     |     |     |     |     |     |     |
+| 12              | 0   | 0   | 0   | 0   | 1   | 1   | 0   | 0   |
+
+Which is the sum of its set bits value in the two complement table, which is
+8+4, thus 12. However this is only valid for unsigned 8 bit integers,
+representing 0..256 different values. For signed integers the [most significant
+bit](https://en.wikipedia.org/wiki/Bit_numbering) has a negative weight, while
+all others are the same numbers we are "adding" to this starting point. So -12
+would be first msb set, so -128 as a base, whereas then the bits for 64, 32 and
+4 are set so we arrive at -12 (-128+64+32+16+4=-12):
+
+| two complements | -(2^7) | 2^6 | 2^5 | 2^4 | 2^3 | 2^2 | 2^1 | 2^0 |
+| --------------- | ------ | --- | --- | --- | --- | --- | --- | --- |
+| decimal         | -128   | 64  | 32  | 16  | 8   | 4   | 2   | 1   |
+| -               |        |     |     |     |     |     |     |     |
+| -12             | 1      | 1   | 1   | 0   | 0   | 1   | 0   | 0   |
+
+This 
 
 # In the IR
 
@@ -174,7 +205,6 @@ pub(super) unsafe fn enter<const B: bool>(
 }
 ```
 
-
 For instance, the NOP op handler is defined as:
 
 ```rust
@@ -269,7 +299,7 @@ ops! {
         /// distance between elements of array, so addr = arr + 8 + idx * stride
         stride: u16,
     },
-    
+
     // [...]
     Nop,
 }
@@ -315,7 +345,6 @@ macro_rules! encode_packed {
     // [...]
 }
 ```
-
 
 And unpack it using a method on the `Packed` structure:
 
@@ -422,7 +451,6 @@ macro_rules! encode_packed {
 
 It is decoded or unpacked with a method of the same name on `Packed`:
 
- 
 ```rust{hl_lines=["27-30"]}
 impl Packed {
     // [...]
