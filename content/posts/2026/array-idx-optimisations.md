@@ -66,11 +66,7 @@ The attentive reader will have realised this produces 8 instructions per index,
 which for the bytecode backend, where dispatch dominates, is very costly, even
 more so than in the x86 backend, where it still isnt free though.
 
-# Simplifying two bounds checks into one
-
-<!--TODO: put somethin here-->
-
-## MAH 2complements
+# Simplifying two bounds checks into one by knowing 2complement
 
 For the sake of explaining the simplification, I will not show this with 32 bit
 integers, but rather with 8 bit. In general, fixed point integers are
@@ -97,11 +93,11 @@ would be first msb set, so -128 as a base, whereas then the bits for 64, 32 and
 | --------------- | ------ | --- | --- | --- | --- | --- | --- | --- |
 | decimal         | -128   | 64  | 32  | 16  | 8   | 4   | 2   | 1   |
 | -               |        |     |     |     |     |     |     |     |
-| -12             | 1      | 1   | 1   | 0   | 0   | 1   | 0   | 0   |
+| -12             | 1      | 1   | 1   | 1   | 0   | 1   | 0   | 0   |
 
 This 
 
-# In the IR
+# In the Immediate representation
 
 Thus, let me introduce the `Index` ir instruction, merging the bounds check,
 offset calculation, offset usage and loading the result at said offset into a
@@ -289,14 +285,15 @@ ops! {
     },
     // [...]
 
-    /// `r[dst] = r[target] + 8 + r[idx] * stride`, the address of element idx. Traps with
-    /// [`crate::Anomaly::IndexOutOfBounds`] unless `0 <= r[idx] < len`, len being the array's first
-    /// word.
+    /// `r[dst] = r[target] + 8 + r[idx] * stride`, the address of element idx. 
+    /// Traps with [`crate::Anomaly::IndexOutOfBounds`] unless `0 <= r[idx] < len`,
+    /// len being the array's first word of an array
     Idx {
         dst: u8,
         target: u8,
         idx: u8,
-        /// distance between elements of array, so addr = arr + 8 + idx * stride
+        /// distance between elements of array, 
+        /// so addr = arr + 8 + idx * stride
         stride: u16,
     },
 
@@ -399,7 +396,9 @@ impl super::Op {
             self.tag() as u32
                 | match self {
                     // none
-                    crate::op::Op::Ret | crate::op::Op::Halt | crate::op::Op::Nop => 0,
+                    crate::op::Op::Ret 
+                    | crate::op::Op::Halt 
+                    | crate::op::Op::Nop => 0,
                     // rrr
                     crate::op::Op::IAdd { dst, lhs, rhs } => encode_packed!(rrr, dst, lhs, rhs),
 
@@ -485,9 +484,98 @@ impl Packed {
 }
 ```
 
-## Handling in the handler
+Thus encoding via:
 
-<!-- TODO: write about the handler -->
+```rust
+// rrri11
+crate::op::Op::Idx {
+    dst,
+    target,
+    idx,
+    stride,
+} => encode_packed!(rrri11, dst, target, idx, stride),
+```
+
+Meaning we decode and execute in the handler:
+
+```rust
+use super::*;
+
+pub(super) unsafe fn idx<const B: bool>(
+    vm: V,
+    code: *const Packed,
+    pc: usize,
+    op: Packed,
+) -> usize {
+    unsafe {
+        // decode op content
+        let (dst, target, idx, stride) = op.rrri11();
+        // fetch numeric idx from rIDX as int
+        // could be just 5 or something
+        let idx = r!(vm, idx).as_int();
+        // fetch rTARGET as a ptr, for instance an array
+        let ptr = r!(vm, target).as_ptr::<u8>();
+
+        // idx has to uphold 0<=idx<len(src), 
+        // where len(src) is ptr+0, see memory layout 
+        // of arrays
+        trap_if!(
+            vm,
+            idx as u64 >= *(ptr as *const u64),
+            Anomaly::IndexOutOfBounds { pc }
+        );
+
+        let offset = 8 + idx as usize * stride as usize;
+        // equiv to c like:
+        //      reg[dst] = *(Value)(arr+8+idx*stride)
+        // where stride is the size of the elements type 
+        // and 8 is the skip over the first word of the ptr,
+        // which is the length of an array
+        r_mut!(vm, dst) = Value::from_ptr(ptr.add(offset));
+        next!(vm, code, pc.wrapping_add(1))
+    }
+}
+```
+
+Visualising with both vm registers and memory, assuming we are executing:
+
+```garden
+let arr = [161 187]
+# focusing on:
+let idx2 = arr.[2]
+```
+
+Eqiv to loading the idx into r1, while the array reference is in r0:
+
+```asm
+00000000 <entry>:
+    ; removed array creation
+  0007:    5c 10 00 00    load_imm r1, #2
+  0008:    3a 00 01 01    idx r0, r0, r1, #8
+```
+
+```text
++------------ Vm -----------+
+|     | u64 | u64 | u64 |   |
+|   r | r0  | r1  | r2  |   |
++-------^-----^-------------+
+        |     |
+        |     idx (Int)
+        |
+       target (&Array<Int>)
+              |
+              _
+---------- Vm Heap -----------
+              |
+              +-------+
+                      |            
+                      v
+        +----------- Arr -------------+
+        | component: len  |pos0 |pos1 |
+        | layout:    [2]  [161] [187] |
+        | size (B):  [64] [64]  [64]  |
+        +-----------------------------+
+```
 
 # In the x86 jit backend
 
@@ -496,8 +584,6 @@ Whereas previously this required a bucketload of instructions:
 > Btw thank [samuelscheit](https://samuelscheit.com/) for the x86 assembly
 > annotations, he was buggering me how no one understands this without comments
 > :)
-
-<!-- TODO: annotate asm -->
 
 ```nasm
 0000000000000000 <jit_at>:
