@@ -1,16 +1,20 @@
 ---
 title: "Making array indexing cheaper in purple gardens VM and JIT"
-summary: "Using twos complement to only assert once per idx attempt, instead of twice"
+summary: "Using 2s complement for merging work & taking detours into dispatch and opcode design"
 date: 2026-11-15
 draft: true
+math: true
 tags:
   - rust
   - pldev
 ---
 
-Arrays must be indexable, this index has to adhere to being `0<=i<|a|`; where
-`||` is the length of the array `a`. Checking this is regarded as a bounds
-check ([wikipedia -Bounds
+Welcome to yet another blog article about a single topic hijacked into a dev
+log kind of situation with some detours and some microbenchmarks, have fun :)
+
+Sooooooo: Arrays must be indexable, the index has to adhere to being
+`0<=i<|a|`; where `||` is the length of the array `a`. Checking this is
+regarded as a bounds check ([wikipedia -Bounds
 checking](https://en.wikipedia.org/wiki/Bounds_checking))
 
 # The obligatory gardening example
@@ -68,28 +72,61 @@ more so than in the x86 backend, where it still isnt free though.
 
 # Simplifying two bounds checks into one by knowing 2complement
 
+{{<callout type="TL;DR - I know math 🤓 - Info">}}
+Two cases, assuming i and len are i64 values and len is nonnegative:
+
+- A: negative index:
+
+$$
+\begin{aligned}
+i < 0 &\implies i \bmod 2^{64} \geq 2^{63} \\
+0 \leq len &\implies len < 2^{63} \\
+&\implies \textrm{cast}_{u64}(i) > \textrm{cast}_{u64}(len)
+\end{aligned}
+$$
+
+- B: nonnegative index:
+
+$$
+\begin{aligned}
+i \geq 0 &\implies \textrm{cast}_{u64}(i) = i \\
+&\implies \textrm{cast}_{u64}(i) < \textrm{cast}_{u64}(len)
+\Leftrightarrow i < len
+\end{aligned}
+$$
+
+Thus, combined:
+$$
+\begin{aligned}
+-1 < i < len
+&\Leftrightarrow
+\textrm{cast}_{u64}(i) < \textrm{cast}_{u64}(len)
+\end{aligned}
+$$
+{{</callout>}}
+
 For the sake of explaining the simplification, I will not show this with 32 bit
-integers, but rather with 8 bit. In general, fixed point integers are
+integers, but rather with 8 bit. In general, fixed width integers are
 represented with the [two
 complements](https://en.wikipedia.org/wiki/Two%27s_complement) method, meaning
 you have a numeric value assigned to each bit, for instance 12 is formed by
 setting the bits for 4 and 8, but not for 1 and 2, in a table it would be:
 
-| two complements | 2^7 | 2^6 | 2^5 | 2^4 | 2^3 | 2^2 | 2^1 | 2^0 |
+| twos complement | 2^7 | 2^6 | 2^5 | 2^4 | 2^3 | 2^2 | 2^1 | 2^0 |
 | --------------- | --- | --- | --- | --- | --- | --- | --- | --- |
 | decimal         | 128 | 64  | 32  | 16  | 8   | 4   | 2   | 1   |
 | -               |     |     |     |     |     |     |     |     |
 | 12              | 0   | 0   | 0   | 0   | 1   | 1   | 0   | 0   |
 
-Which is the sum of its set bits value in the two complement table, which is
+Which is the sum of its set bits value in the twos complement table, which is
 8+4, thus 12. However this is only valid for unsigned 8 bit integers,
-representing 0..256 different values. For signed integers the [most significant
+representing 0<=x<=255 (256) different values. For signed integers the [most significant
 bit](https://en.wikipedia.org/wiki/Bit_numbering) has a negative weight, while
 all others are the same numbers we are "adding" to this starting point. So -12
 would be first msb set, so -128 as a base, whereas then the bits for 64, 32 and
 4 are set so we arrive at -12 (-128+64+32+16+4=-12):
 
-| two complements | -(2^7) | 2^6 | 2^5 | 2^4 | 2^3 | 2^2 | 2^1 | 2^0 |
+| twos complement | -(2^7) | 2^6 | 2^5 | 2^4 | 2^3 | 2^2 | 2^1 | 2^0 |
 | --------------- | ------ | --- | --- | --- | --- | --- | --- | --- |
 | decimal         | -128   | 64  | 32  | 16  | 8   | 4   | 2   | 1   |
 | -               |        |     |     |     |     |     |     |     |
@@ -97,7 +134,7 @@ would be first msb set, so -128 as a base, whereas then the bits for 64, 32 and
 
 However, a simple cast in the sense of `-12 as u8` results not in 12, but in
 the unsigned interpretation of -12's bits, specifically seeing 0b11110100,
-which results in 128+64+32+16+4=244. 
+which results in 128+64+32+16+4=244.
 
 In summary: casting a negative signed integer to its equal bit sized unsigned
 counterpart produces very large numbers, thus satisfing our requirement to make
@@ -135,6 +172,7 @@ fn main() {
 ```shell
 cargo run 12 15 1 0 -1000
 ```
+
 {{</callout>}}
 
 # In the Immediate representation
@@ -335,14 +373,14 @@ ops! {
     },
     // [...]
 
-    /// `r[dst] = r[target] + 8 + r[idx] * stride`, the address of element idx. 
+    /// `r[dst] = r[target] + 8 + r[idx] * stride`, the address of element idx.
     /// Traps with [`crate::Anomaly::IndexOutOfBounds`] unless `0 <= r[idx] < len`,
     /// len being the array's first word of an array
     Idx {
         dst: u8,
         target: u8,
         idx: u8,
-        /// distance between elements of array, 
+        /// distance between elements of array,
         /// so addr = arr + 8 + idx * stride
         stride: u16,
     },
@@ -446,8 +484,8 @@ impl super::Op {
             self.tag() as u32
                 | match self {
                     // none
-                    crate::op::Op::Ret 
-                    | crate::op::Op::Halt 
+                    crate::op::Op::Ret
+                    | crate::op::Op::Halt
                     | crate::op::Op::Nop => 0,
                     // rrr
                     crate::op::Op::IAdd { dst, lhs, rhs } => encode_packed!(rrr, dst, lhs, rhs),
@@ -566,8 +604,8 @@ pub(super) unsafe fn idx<const B: bool>(
         // fetch rTARGET as a ptr, for instance an array
         let ptr = r!(vm, target).as_ptr::<u8>();
 
-        // idx has to uphold 0<=idx<len(src), 
-        // where len(src) is ptr+0, see memory layout 
+        // idx has to uphold 0<=idx<len(src),
+        // where len(src) is ptr+0, see memory layout
         // of arrays
         trap_if!(
             vm,
@@ -578,7 +616,7 @@ pub(super) unsafe fn idx<const B: bool>(
         let offset = 8 + idx as usize * stride as usize;
         // equiv to c like:
         //      reg[dst] = *(Value)(arr+8+idx*stride)
-        // where stride is the size of the elements type 
+        // where stride is the size of the elements type
         // and 8 is the skip over the first word of the ptr,
         // which is the length of an array
         r_mut!(vm, dst) = Value::from_ptr(ptr.add(offset));
@@ -618,7 +656,7 @@ Eqiv to loading the idx into r1, while the array reference is in r0:
 ---------- Vm Heap -----------
               |
               +-------+
-                      |            
+                      |
                       v
         +----------- Arr -------------+
         | component: len  |pos0 |pos1 |
@@ -699,7 +737,8 @@ We now instead lower the `Index` instruction to:
     ; compare rdx (idx) with rsi+0 (array len)
   29:   48 3b 56 00             cmp    0x0(%rsi),%rdx
     ; unsigned idx < len holds, skip trap, continue at 4c
-    ; (jb is the unsigned below, so a negative idx is huge and fails)
+    ; (jb is the unsigned below, so a negative idx is huge
+    ; and fails the check, as i explained in the 2complements section)
   2d:   0f 82 19 00 00 00       jb     4c <jit_at+0x4c>
     ; vm ptr as first arg
   33:   48 89 df                mov    %rbx,%rdi
@@ -713,7 +752,6 @@ We now instead lower the `Index` instruction to:
     ; trap
   4a:   ff d0                   call   *%rax
     ; rsi+rdx*8+8 (arr+idx*type size+length skip) into rsi,
-
     ; (this merges the offset computation in a single instruction, aitn that
     ; nice)
   4c:   48 8d 74 d6 08          lea    0x8(%rsi,%rdx,8),%rsi
@@ -771,32 +809,25 @@ Mem: 21.27/31.26 GiB (68.0%) Storage: 2.27 TiB (38.6% used)
 Procs: 506 Shell: fish inxi: 3.3.41
 ```
 
-## Baseline
+## Results for Interpreter and Jit
 
-|     | Wall time | Instructions  | Cycles      | Branches    | Branch misses |
-| --- | --------- | ------------- | ----------- | ----------- | ------------- |
-| VM  | 96 ms     | 1,374,124,575 | 394,652,180 | 112,984,439 | 225,353       |
-| JIT | 12.0 ms   | 140,112,693   | 43,480,187  | 26,982,943  | 211,910       |
+| Interpreter (`--no-jit`)   | Before        | After       | Change        |
+| -------------------------- | ------------- | ----------- | ------------- |
+| Wall time                  | 95.6 ms       | 59.9 ms     | −37.4% (1.6x) |
+| Instructions               | 1,374,124,846 | 836,515,352 | −39.1%        |
+| Cycles                     | 381,011,434   | 234,946,985 | −38.3%        |
+| Branches                   | 112,984,474   | 68,182,320  | −39.7%        |
+| Branch misses              | 212,833       | 212,073     | 0             |
+| IPC                        | 3.61          | 3.56        | −0.05         |
 
-## Postwork - Bytecode
-
-| VM            | Before        | After       | Change        |
-| ------------- | ------------- | ----------- | ------------- |
-| Wall time     | 95.4 ms       | 59.7 ms     | −37.5% (1.6x) |
-| Instructions  | 1,374,125,067 | 836,514,290 | −39.1%        |
-| Cycles        | 382,010,097   | 236,250,236 | −38.2%        |
-| Branches      | 112,984,570   | 68,182,029  | −39.7%        |
-| Branch misses | 212,093       | 211,680     |               |
-
-## JIT - Bytecode
-
-| JIT           | Before      | After      | Change        |
-| ------------- | ----------- | ---------- | ------------- |
-| Wall time     | 11.4 ms     | 7.8 ms     | −31.0% (1.4x) |
-| Instructions  | 140,111,753 | 76,100,879 | −45.7%        |
-| Cycles        | 42,099,555  | 27,917,091 | −33.7%        |
-| Branches      | 26,982,657  | 20,580,313 | −23.7%        |
-| Branch misses | 211,306     | 211,205    |               |
+| JIT                        | Before      | After      | Change        |
+| -------------------------- | ----------- | ---------- | ------------- |
+| Wall time                  | 11.5 ms     | 7.9 ms     | −31.0% (1.4x) |
+| Instructions               | 140,113,697 | 76,103,420 | −45.7%        |
+| Cycles                     | 42,189,251  | 27,802,005 | −34.1%        |
+| Branches                   | 26,983,190  | 20,581,065 | −23.7%        |
+| Branch misses              | 211,863     | 211,747    | 0             |
+| IPC                        | 3.32        | 2.74       | −0.58         |
 
 [^opt-workaround]:
     i added, so the preexisting optimisation
