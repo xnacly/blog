@@ -2,7 +2,6 @@
 title: "Making array indexing cheaper in purple gardens VM and JIT"
 summary: "Using 2s complement for merging work & taking detours into dispatch and opcode design"
 date: 2026-11-15
-draft: true
 math: true
 tags:
   - rust
@@ -178,8 +177,7 @@ cargo run 12 15 1 0 -1000
 # In the Immediate representation
 
 Thus, let me introduce the `Index` ir instruction, merging the bounds check,
-offset calculation, offset usage and loading the result at said offset into a
-single instruction:
+offset calculation and offset usage a single instruction:
 
 ```llvm
 // at
@@ -240,8 +238,8 @@ Btw, purple garden uses the
 tailcalling op code handlers, meaning instead of jumping back to the loop head,
 decoding the op code and then jumping to the handler. Instead, become decodes
 the op and the jmp location and then jumps to it, making dispatch less costly
-due to less indirection and cpu branch mispredictions while jumping from opcode
-handler to opcode handler, see the following setup:
+due to less indirection while jumping from opcode handler to opcode handler,
+see the following setup:
 
 ```rust
 type V = *mut Vm<'static>;
