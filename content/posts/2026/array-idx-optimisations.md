@@ -95,7 +95,47 @@ would be first msb set, so -128 as a base, whereas then the bits for 64, 32 and
 | -               |        |     |     |     |     |     |     |     |
 | -12             | 1      | 1   | 1   | 1   | 0   | 1   | 0   | 0   |
 
-This 
+However, a simple cast in the sense of `-12 as u8` results not in 12, but in
+the unsigned interpretation of -12's bits, specifically seeing 0b11110100,
+which results in 128+64+32+16+4=244. 
+
+In summary: casting a negative signed integer to its equal bit sized unsigned
+counterpart produces very large numbers, thus satisfing our requirement to make
+the bound check in a single comparison.
+
+This behaviour we can exploit to merge the two comparisons in both the bytecode
+and the x86 jitted output from:
+
+```rust
+-1 < i && i < len
+```
+
+To
+
+```rust
+(i as u64) < (len as u64)
+```
+
+{{<callout type="Info">}}
+My quick verification to make sure:
+
+```rust
+fn main() {
+    let len = 2;
+    std::env::args()
+        .filter_map(|n| n.parse::<i64>().ok())
+        .for_each(|i| {
+            let base = -1 < i && i < len;
+            let opt = (i as u64) < (len as u64);
+            assert_eq!(base, opt);
+        });
+}
+```
+
+```shell
+cargo run 12 15 1 0 -1000
+```
+{{</callout>}}
 
 # In the Immediate representation
 
@@ -118,18 +158,25 @@ fn f1(%v0:Array<Int>, %v1:Int) -> Int {
 
 Previously, the ir lowered to bytecode instructions:
 
-<!-- TODO: annotate bytecode-->
-
 ```asm
 00000000 <at>:
     ; removed prologue
+
+    ; fetch r0+0 (array length) into r2
   0005:    b8 00 00 00    load r2, r0, #0          ; 4: xs.[i]
+    ; check r1 (idx) > -1 into r3
   0006:    d0 08 ff ff    igt_imm r3, r1, #-1
+    ; trap if !r3
   0007:    fb 08 00 00    assert r3, InBounds
+    ; check r1 < r2 (idx < arrlen) into r2
   0008:    8c 08 02 00    ilt r2, r1, r2
+    ; trap if !r2
   0009:    bb 08 00 00    assert r2, InBounds
+    ; r1 mul 8 (idx*type size) into r1
   000a:    45 08 08 00    imul_imm r1, r1, #8
+    ; r0+r1 (arr+offset) into r0
   000b:    00 00 01 00    iadd r0, r0, r1
+    ; fetch value from r0
   000c:    38 00 08 00    load r0, r0, #8
     ; removed epilogue
 ```
@@ -140,7 +187,10 @@ cutting the dispatch cost by a lot 🤓:
 ```asm
 00000000 <at>:
     ; removed prologue
+
+    ; idx r0 with r1 with typesize 8 into r0 (arr[idx])
   0005:    3a 00 01 01    idx r0, r0, r1, #8       ; 4: xs.[i]
+    ; fetch value from r0
   0006:    38 00 00 00    load r0, r0, #0
     ; removed epilogue
 ```
@@ -542,7 +592,7 @@ Visualising with both vm registers and memory, assuming we are executing:
 ```garden
 let arr = [161 187]
 # focusing on:
-let idx2 = arr.[2]
+let idx2 = arr.[1]
 ```
 
 Eqiv to loading the idx into r1, while the array reference is in r0:
@@ -550,7 +600,7 @@ Eqiv to loading the idx into r1, while the array reference is in r0:
 ```asm
 00000000 <entry>:
     ; removed array creation
-  0007:    5c 10 00 00    load_imm r1, #2
+  0007:    5c 08 00 00    load_imm r1, #1
   0008:    3a 00 01 01    idx r0, r0, r1, #8
 ```
 
@@ -573,7 +623,6 @@ Eqiv to loading the idx into r1, while the array reference is in r0:
         +----------- Arr -------------+
         | component: len  |pos0 |pos1 |
         | layout:    [2]  [161] [187] |
-        | size (B):  [64] [64]  [64]  |
         +-----------------------------+
 ```
 
@@ -588,24 +637,42 @@ Whereas previously this required a bucketload of instructions:
 ```nasm
 0000000000000000 <jit_at>:
     ; removed prologue
+
+    ; rsi=r0 (arr ptr), rdx=r1 (idx), rbx=vm ptr
+
+    ; fetch rsi+0 (array length) into r8
   29:   4c 8b 46 00             mov    0x0(%rsi),%r8
+    ; compare rdx (idx) with -1
   2d:   48 81 fa ff ff ff ff    cmp    $0xffffffffffffffff,%rdx
+    ; zero r9, mov instead of xor, so xor doesnt clobber cmp flag(s)
   34:   49 c7 c1 00 00 00 00    mov    $0x0,%r9
+    ; r9b=1 if idx > -1
   3b:   41 0f 9f c1             setg   %r9b
+    ; check r9 != 0
   3f:   4d 85 c9                test   %r9,%r9
+    ; if idx > -1, jmp over trap, continue at 61
   42:   0f 85 19 00 00 00       jne    61 <jit_at+0x61>
+    ; vm as first arg
   48:   48 89 df                mov    %rbx,%rdi
+    ; anomaly kind as second arg (to communicate trap is InBounds kind)
   4b:   48 be 01 00 00 00 00    movabs $0x1,%rsi
   52:   00 00 00
+    ; absolute addr of jit_trap_assert in rax
   55:   48 b8 00 00 00 00 00    movabs $0x0,%rax
   5c:   00 00 00
                         57: R_X86_64_64 jit_trap_assert
   5f:   ff d0                   call   *%rax
+    ; compare rdx (idx) with r8 (array length)
   61:   4c 39 c2                cmp    %r8,%rdx
+    ; zero r8, flag preserving
   64:   49 c7 c0 00 00 00 00    mov    $0x0,%r8
+    ; r8b=1 if idx < len
   6b:   41 0f 9c c0             setl   %r8b
+    ; check r8 != 0
   6f:   4d 85 c0                test   %r8,%r8
+    ; if idx < len, skip over trap, continue at 91
   72:   0f 85 19 00 00 00       jne    91 <jit_at+0x91>
+    ; same trap setup and call as above
   78:   48 89 df                mov    %rbx,%rdi
   7b:   48 be 01 00 00 00 00    movabs $0x1,%rsi
   82:   00 00 00
@@ -613,8 +680,11 @@ Whereas previously this required a bucketload of instructions:
   8c:   00 00 00
                         87: R_X86_64_64 jit_trap_assert
   8f:   ff d0                   call   *%rax
+    ; rdx mul 8 (idx*type size) into r8
   91:   4c 69 c2 08 00 00 00    imul   $0x8,%rdx,%r8
+    ; rsi+r8 (arr+offset) into rsi
   98:   4c 01 c6                add    %r8,%rsi
+    ; fetch value from rsi+8 (skipping the length) into rsi
   9b:   48 8b 76 08             mov    0x8(%rsi),%rsi
     ; removed epilogue
 ```
@@ -624,16 +694,30 @@ We now instead lower the `Index` instruction to:
 ```nasm
 0000000000000000 <jit_at>:
     ; removed prologue
+    ; rsi=r0 (arr ptr), rdx=r1 (idx), rbx=vm ptr
+
+    ; compare rdx (idx) with rsi+0 (array len)
   29:   48 3b 56 00             cmp    0x0(%rsi),%rdx
+    ; unsigned idx < len holds, skip trap, continue at 4c
+    ; (jb is the unsigned below, so a negative idx is huge and fails)
   2d:   0f 82 19 00 00 00       jb     4c <jit_at+0x4c>
+    ; vm ptr as first arg
   33:   48 89 df                mov    %rbx,%rdi
+    ; anomaly kind as second arg
   36:   48 be 01 00 00 00 00    movabs $0x1,%rsi
   3d:   00 00 00
+    ; absolute addr of jit_trap_assert in rax
   40:   48 b8 00 00 00 00 00    movabs $0x0,%rax
   47:   00 00 00
                         42: R_X86_64_64 jit_trap_assert
+    ; trap
   4a:   ff d0                   call   *%rax
+    ; rsi+rdx*8+8 (arr+idx*type size+length skip) into rsi,
+
+    ; (this merges the offset computation in a single instruction, aitn that
+    ; nice)
   4c:   48 8d 74 d6 08          lea    0x8(%rsi,%rdx,8),%rsi
+    ; fetch value from rsi
   51:   48 8b 76 00             mov    0x0(%rsi),%rsi
     ; removed epilogue
 ```
